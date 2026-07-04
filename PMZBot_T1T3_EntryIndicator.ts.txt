@@ -224,13 +224,30 @@ def callDistance = oneClose - pmzLow;
 def putDistance = pmzHigh - oneClose;
 def callWithinDistance = callDistance <= MaxDistanceOutsidePmzPoints;
 def putWithinDistance = putDistance <= MaxDistanceOutsidePmzPoints;
+def fiveCallDistance = fiveClose - pmzLow;
+def fivePutDistance = pmzHigh - fiveClose;
+def fiveCallWithinDistance = fiveCallDistance <= MaxDistanceOutsidePmzPoints;
+def fivePutWithinDistance = fivePutDistance <= MaxDistanceOutsidePmzPoints;
 
 def statePrev = CompoundValue(1, state[1], 0);
 def armPrev = CompoundValue(1, cleanArm[1], 0);
 def budgetPrev = CompoundValue(1, triggerBudget[1], 0);
 
-def cleanCallFire = entriesAllowed and armPrev == 1 and oneAbove and callWithinDistance;
-def cleanPutFire = entriesAllowed and armPrev == 2 and oneBelow and putWithinDistance;
+def crossedThroughOutside = isFiveMinuteClose and fiveOverlapsPmz and (fiveAbove or fiveBelow);
+def stateForFiveMinute = if crossedThroughOutside then 0 else statePrev;
+def fullReversalToCall = EnableFullReversalFreshBreakout and stateForFiveMinute == 4 and fiveAbove;
+def fullReversalToPut = EnableFullReversalFreshBreakout and stateForFiveMinute == 3 and fiveBelow;
+
+def isFirstEntryGateBoundary = isFiveMinuteClose and fiveSlot == 1;
+def crossThroughCleanCall = isFiveMinuteClose and stateForFiveMinute == 2 and fiveAbove and fiveCallWithinDistance;
+def crossThroughCleanPut = isFiveMinuteClose and stateForFiveMinute == 1 and fiveBelow and fivePutWithinDistance;
+def sameBarCleanCall = isFiveMinuteClose and fiveAbove and fiveCallWithinDistance and
+    (fullReversalToCall or (stateForFiveMinute == 0 and isFirstEntryGateBoundary) or crossThroughCleanCall);
+def sameBarCleanPut = isFiveMinuteClose and fiveBelow and fivePutWithinDistance and
+    (fullReversalToPut or (stateForFiveMinute == 0 and isFirstEntryGateBoundary) or crossThroughCleanPut);
+
+def cleanCallFire = entriesAllowed and oneAbove and callWithinDistance and (armPrev == 1 or sameBarCleanCall);
+def cleanPutFire = entriesAllowed and oneBelow and putWithinDistance and (armPrev == 2 or sameBarCleanPut);
 def pullbackCallFire = entriesAllowed and statePrev == 1 and oneAbove and callWithinDistance;
 def pullbackPutFire = entriesAllowed and statePrev == 2 and oneBelow and putWithinDistance;
 
@@ -241,11 +258,6 @@ def cleanArmConsumed = cleanCallFire or cleanPutFire or
 def pullbackMiss = (statePrev == 1 or statePrev == 2) and !pullbackCallFire and !pullbackPutFire;
 def budgetAfterOneMinute = if pullbackMiss and !isFiveMinuteClose then budgetPrev - 1 else budgetPrev;
 def pullbackTimedOut = pullbackMiss and !isFiveMinuteClose and budgetAfterOneMinute <= 0;
-
-def crossedThroughOutside = isFiveMinuteClose and fiveOverlapsPmz and (fiveAbove or fiveBelow);
-def stateForFiveMinute = if crossedThroughOutside then 0 else statePrev;
-def fullReversalToCall = EnableFullReversalFreshBreakout and stateForFiveMinute == 4 and fiveAbove;
-def fullReversalToPut = EnableFullReversalFreshBreakout and stateForFiveMinute == 3 and fiveBelow;
 def armsCleanCall = isRthOpen and oneAbove or
     (isFiveMinuteClose and fiveAbove and (stateForFiveMinute == 0 or fullReversalToCall));
 def armsCleanPut = isRthOpen and oneBelow or
@@ -281,7 +293,8 @@ def triggerBudget = CompoundValue(1,
     0);
 
 def cleanArm = CompoundValue(1,
-    if armsCleanCall then 1
+    if cleanCallFire or cleanPutFire then 0
+    else if armsCleanCall then 1
     else if armsCleanPut then 2
     else if cleanArmConsumed then 0
     else armPrev,

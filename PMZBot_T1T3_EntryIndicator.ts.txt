@@ -25,6 +25,8 @@ input futures = no;
 #hint futures: Plot PMZ after hours on futures.
 input Banner = no;
 #hint Banner: Debug labels (PMZ state, distance, gate). Off by default; distance-chart mode is visual.
+input ShowStatusStrip = yes;
+#hint ShowStatusStrip: Large high-contrast PMZ and distance-gate values in the chart corner.
 input ShowDistanceChartStyle = yes;
 #hint ShowDistanceChartStyle: Match the /distance chart: PMZ band, +/- distance gate, admit slivers, triangles.
 input ShowEntryMarkers = yes;
@@ -471,19 +473,33 @@ def neutralOnFiveInside = isFiveMinuteClose and fiveInside;
 AddVerticalLine(ShowNeutralLines and neutralAtOpen, "Neutral", CreateColor(161, 66, 244), Curve.SHORT_DASH);
 AddVerticalLine(ShowNeutralLines and neutralOnFiveInside, "Neutral", CreateColor(161, 66, 244), Curve.SHORT_DASH);
 
-# Compact session strip — always on so PMZ/gate values are visible without full Banner.
-AddLabel(yes,
-    "PMZ " +
-    AsText(pmzLowDisplay, NumberFormat.TWO_DECIMAL_PLACES) + "-" +
-    AsText(pmzHighDisplay, NumberFormat.TWO_DECIMAL_PLACES) +
-    " | +/- " + AsText(MaxDistanceOutsidePmzPoints, NumberFormat.TWO_DECIMAL_PLACES) +
-    " gate " +
-    AsText(callGateCeiling, NumberFormat.TWO_DECIMAL_PLACES) + "/" +
-    AsText(putGateFloor, NumberFormat.TWO_DECIMAL_PLACES) +
-    (if callFire or putFire then " | ENTRY" else ""),
-    if callFire then CreateColor(52, 168, 83)
-    else if putFire then CreateColor(234, 67, 53)
-    else Color.WHITE);
+# Status strip — large font, bright colors (readable on TOS dark chart backgrounds).
+AddLabel(
+    ShowStatusStrip,
+    "PMZ Low: " + AsText(pmzLowDisplay, NumberFormat.TWO_DECIMAL_PLACES),
+    Color.RED,
+    location = Location.TOP_LEFT,
+    size = FontSize.LARGE);
+AddLabel(
+    ShowStatusStrip,
+    "PMZ High: " + AsText(pmzHighDisplay, NumberFormat.TWO_DECIMAL_PLACES),
+    Color.CYAN,
+    location = Location.TOP_LEFT,
+    size = FontSize.LARGE);
+AddLabel(
+    ShowStatusStrip,
+    "+/-" + AsText(MaxDistanceOutsidePmzPoints, NumberFormat.TWO_DECIMAL_PLACES) +
+    " gate  Call " + AsText(callGateCeiling, NumberFormat.TWO_DECIMAL_PLACES) +
+    "  Put " + AsText(putGateFloor, NumberFormat.TWO_DECIMAL_PLACES),
+    Color.YELLOW,
+    location = Location.TOP_LEFT,
+    size = FontSize.LARGE);
+AddLabel(
+    ShowStatusStrip and (callFire or putFire),
+    if callFire then "ENTRY CALL" else "ENTRY PUT",
+    if callFire then Color.LIME else Color.ORANGE,
+    location = Location.TOP_LEFT,
+    size = FontSize.X_LARGE);
 
 AddLabel(Banner,
     "LIS: " + AsText(LIS, NumberFormat.TWO_DECIMAL_PLACES) +

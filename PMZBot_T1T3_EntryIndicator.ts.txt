@@ -23,14 +23,18 @@ input Premarket = {default "PRE", "ALL"};
 #hint futures: Use premarket or All when calculating PMZ.
 input futures = no;
 #hint futures: Plot PMZ after hours on futures.
-input Banner = yes;
-#hint Banner: Show banner on chart for PMZ H/L, risk, and entry-state inputs.
+input Banner = no;
+#hint Banner: Debug labels (PMZ state, distance, gate). Off by default; distance-chart mode is visual.
+input ShowDistanceChartStyle = yes;
+#hint ShowDistanceChartStyle: Match the /distance chart: PMZ band, +/- distance gate, admit slivers, triangles.
 input ShowEntryMarkers = yes;
-#hint ShowEntryMarkers: Plot CALL/PUT arrows and bubbles at entry fire bars. Requires a 1-minute /ES chart.
+#hint ShowEntryMarkers: Green/red triangles at the 1-minute close on entry fires. Requires a 1-minute /ES chart.
+input ShowNeutralLines = yes;
+#hint ShowNeutralLines: Dotted vertical lines when neutral is asserted (09:30 open, 5-min inside PMZ).
 input AdjustPMZ = yes;
 #hint AdjustPMZ: Adjust PMZ risk to be between 5 and 8 points. Production default is yes.
-input ShowPMZBand = no;
-#hint ShowPMZBand: Plot the adjusted PMZ band from this entry study.
+input ShowPMZBand = yes;
+#hint ShowPMZBand: Plot the adjusted PMZ band. On by default; also enabled by ShowDistanceChartStyle.
 input ShowOriginalPMZWhenAdjusted = no;
 #hint ShowOriginalPMZWhenAdjusted: Plot the unadjusted PMZ band in gray when AdjustPMZ is enabled.
 input MaxDistanceOutsidePmzPoints = 10.0;
@@ -164,10 +168,22 @@ def pmzLow = if AdjustPMZ then adjusted_lower else pmzLowOriginal;
 def pmzHighDisplay = pmzHigh;
 def pmzLowDisplay = pmzLow;
 
+def inRthSession = SecondsFromTime(0930) >= 0 and SecondsFromTime(cnull) < 0;
+def showPmzBand = (ShowPMZBand or ShowDistanceChartStyle) and inRthSession;
+def showDistanceGate = ShowDistanceChartStyle and inRthSession;
+def callGateCeiling = if !IsNaN(pmzLow) then pmzLow + MaxDistanceOutsidePmzPoints else Double.NaN;
+def putGateFloor = if !IsNaN(pmzHigh) then pmzHigh - MaxDistanceOutsidePmzPoints else Double.NaN;
+
 plot original_upper = if ShowOriginalPMZWhenAdjusted and AdjustPMZ then upper else Double.NaN;
 plot original_lower = if ShowOriginalPMZWhenAdjusted and AdjustPMZ then lower else Double.NaN;
-plot final_upper = if ShowPMZBand then pmzHigh else Double.NaN;
-plot final_lower = if ShowPMZBand then pmzLow else Double.NaN;
+plot final_upper = if showPmzBand then pmzHigh else Double.NaN;
+plot final_lower = if showPmzBand then pmzLow else Double.NaN;
+plot callDistanceGate = if showDistanceGate then callGateCeiling else Double.NaN;
+plot putDistanceGate = if showDistanceGate then putGateFloor else Double.NaN;
+plot callSliverTop = if showDistanceGate and callGateCeiling > pmzHigh then callGateCeiling else Double.NaN;
+plot callSliverBottom = if showDistanceGate and callGateCeiling > pmzHigh then pmzHigh else Double.NaN;
+plot putSliverTop = if showDistanceGate and putGateFloor < pmzLow then pmzLow else Double.NaN;
+plot putSliverBottom = if showDistanceGate and putGateFloor < pmzLow then putGateFloor else Double.NaN;
 
 def ahh = if SecondsTillTime(cnull) == 0 then 0
     else if fut_time then
@@ -194,12 +210,26 @@ plot ahler = if ShowPMZBand and futures and (nperiod1 or nperiod2) then
 
 original_upper.SetDefaultColor(color.Color("original_gray"));
 original_lower.SetDefaultColor(color.Color("original_gray"));
-final_upper.SetDefaultColor(GetColor(1));
-final_lower.SetDefaultColor(GetColor(1));
+final_upper.SetDefaultColor(Color.DARK_GRAY);
+final_lower.SetDefaultColor(Color.DARK_GRAY);
+final_upper.SetStyle(Curve.FIRM);
+final_lower.SetStyle(Curve.FIRM);
+final_upper.SetLineWeight(2);
+final_lower.SetLineWeight(2);
+callDistanceGate.SetDefaultColor(CreateColor(11, 79, 31));
+putDistanceGate.SetDefaultColor(CreateColor(11, 79, 31));
+callDistanceGate.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+putDistanceGate.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+callDistanceGate.SetStyle(Curve.MEDIUM_DASH);
+putDistanceGate.SetStyle(Curve.MEDIUM_DASH);
+callDistanceGate.SetLineWeight(2);
+putDistanceGate.SetLineWeight(2);
 ah_upper.SetDefaultColor(color.Color("fbull"));
 ahler.SetDefaultColor(color.Color("fbear"));
 AddCloud(original_upper, original_lower, color.Color("original_gray"), color.Color("original_gray"), yes);
-AddCloud(final_upper, final_lower, color.Color("pbull"), color.Color("pbear"), no);
+AddCloud(final_upper, final_lower, Color.GRAY, Color.GRAY, no);
+AddCloud(callSliverBottom, callSliverTop, CreateColor(52, 168, 83), CreateColor(52, 168, 83), no);
+AddCloud(putSliverBottom, putSliverTop, CreateColor(52, 168, 83), CreateColor(52, 168, 83), no);
 AddCloud(ah_upper, ahler, color.Color("fbull"), color.Color("fbear"), no);
 
 script PmzEntryMachine {
@@ -395,40 +425,23 @@ def callFire = cleanCallFire or pullbackCallFire;
 def putFire = cleanPutFire or pullbackPutFire;
 def pullbackFire = pullbackCallFire or pullbackPutFire;
 
-def entryTimeSec = SecondsFromTime(0);
-
-plot CallEntryMarker = if ShowEntryMarkers and callFire then 1 else 0;
-CallEntryMarker.SetPaintingStrategy(PaintingStrategy.BOOLEAN_ARROW_UP);
+# Entry markers: green/red triangles at the 1-minute close (same placement as /distance chart).
+plot CallEntryMarker = if ShowEntryMarkers and callFire then oneClose else Double.NaN;
+CallEntryMarker.SetPaintingStrategy(PaintingStrategy.ARROW_UP);
 CallEntryMarker.SetLineWeight(4);
-CallEntryMarker.SetDefaultColor(Color.GREEN);
+CallEntryMarker.SetDefaultColor(CreateColor(52, 168, 83));
 CallEntryMarker.HideBubble();
 
-plot PutEntryMarker = if ShowEntryMarkers and putFire then 1 else 0;
-PutEntryMarker.SetPaintingStrategy(PaintingStrategy.BOOLEAN_ARROW_DOWN);
+plot PutEntryMarker = if ShowEntryMarkers and putFire then oneClose else Double.NaN;
+PutEntryMarker.SetPaintingStrategy(PaintingStrategy.ARROW_DOWN);
 PutEntryMarker.SetLineWeight(4);
-PutEntryMarker.SetDefaultColor(Color.RED);
+PutEntryMarker.SetDefaultColor(CreateColor(234, 67, 53));
 PutEntryMarker.HideBubble();
 
-AddChartBubble(
-    ShowEntryMarkers and callFire,
-    low,
-    "CALL\n" +
-    AsText(
-        Floor(entryTimeSec / 3600) + Floor((entryTimeSec % 3600) / 60) / 100,
-        NumberFormat.TWO_DECIMAL_PLACES) + " ET\nT1+T2+T3\n" +
-    (if pullbackFire then "Pullback" else "Clean"),
-    Color.GREEN,
-    no);
-AddChartBubble(
-    ShowEntryMarkers and putFire,
-    high,
-    "PUT\n" +
-    AsText(
-        Floor(entryTimeSec / 3600) + Floor((entryTimeSec % 3600) / 60) / 100,
-        NumberFormat.TWO_DECIMAL_PLACES) + " ET\nT1+T2+T3\n" +
-    (if pullbackFire then "Pullback" else "Clean"),
-    Color.RED,
-    yes);
+def neutralAtOpen = isRthOpen;
+def neutralOnFiveInside = isFiveMinuteClose and fiveInside;
+AddVerticalLine(ShowNeutralLines and neutralAtOpen, "Neutral", CreateColor(161, 66, 244), Curve.SHORT_DASH);
+AddVerticalLine(ShowNeutralLines and neutralOnFiveInside, "Neutral", CreateColor(161, 66, 244), Curve.SHORT_DASH);
 
 AddLabel(Banner,
     "LIS: " + AsText(LIS, NumberFormat.TWO_DECIMAL_PLACES) +

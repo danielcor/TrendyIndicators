@@ -112,14 +112,6 @@ def pmlTimeSec = if SecondsTillTime(cnull) == 0 then Double.NaN
         if pml[1] < l then pmlTimeSec[1] else SecondsFromTime(0)
     else pmlTimeSec[1];
 
-# AsText only supports NumberFormat (no TIME). Render ET as H.MM, e.g. 7.35 = 7:35.
-def FormatEtClock(sec) =
-    if IsNaN(sec) then "n/a"
-    else
-        AsText(
-            Floor(sec / 3600) + Floor(Mod(sec, 3600) / 60) / 100,
-            NumberFormat.TWO_DECIMAL_PLACES) + " ET";
-
 def gap = if nperiod then
     if o < LIS then 0 else 1
     else gap[1];
@@ -384,9 +376,18 @@ AddLabel(Banner,
     (if gap == 1 then " (UP)" else " (DOWN/FLAT)"),
     if gap == 1 then Color.GREEN else Color.RED);
 
+# AsText only supports NumberFormat (no TIME). Render ET as H.MM, e.g. 7.35 = 7:35.
+def pmhClockText = if IsNaN(pmhTimeSec) then "n/a"
+    else AsText(
+        Floor(pmhTimeSec / 3600) + Floor(Mod(pmhTimeSec, 3600) / 60) / 100,
+        NumberFormat.TWO_DECIMAL_PLACES) + " ET";
+def pmlClockText = if IsNaN(pmlTimeSec) then "n/a"
+    else AsText(
+        Floor(pmlTimeSec / 3600) + Floor(Mod(pmlTimeSec, 3600) / 60) / 100,
+        NumberFormat.TWO_DECIMAL_PLACES) + " ET";
+
 AddLabel(Banner,
-    "PMH Time: " + FormatEtClock(pmhTimeSec) +
-    " | PML Time: " + FormatEtClock(pmlTimeSec),
+    "PMH Time: " + pmhClockText + " | PML Time: " + pmlClockText,
     Color.CYAN);
 
 AddLabel(Banner,

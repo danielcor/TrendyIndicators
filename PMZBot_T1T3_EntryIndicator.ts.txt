@@ -396,9 +396,6 @@ def putFire = cleanPutFire or pullbackPutFire;
 def pullbackFire = pullbackCallFire or pullbackPutFire;
 
 def entryTimeSec = SecondsFromTime(0);
-def entryTimeText = AsText(
-    Floor(entryTimeSec / 3600) + Floor((entryTimeSec % 3600) / 60) / 100,
-    NumberFormat.TWO_DECIMAL_PLACES) + " ET";
 
 plot CallEntryMarker = if ShowEntryMarkers and callFire then 1 else 0;
 CallEntryMarker.SetPaintingStrategy(PaintingStrategy.BOOLEAN_ARROW_UP);
@@ -415,13 +412,21 @@ PutEntryMarker.HideBubble();
 AddChartBubble(
     ShowEntryMarkers and callFire,
     low,
-    "CALL\n" + entryTimeText + "\nT1+T2+T3\n" + (if pullbackFire then "Pullback" else "Clean"),
+    "CALL\n" +
+    AsText(
+        Floor(entryTimeSec / 3600) + Floor((entryTimeSec % 3600) / 60) / 100,
+        NumberFormat.TWO_DECIMAL_PLACES) + " ET\nT1+T2+T3\n" +
+    (if pullbackFire then "Pullback" else "Clean"),
     Color.GREEN,
     no);
 AddChartBubble(
     ShowEntryMarkers and putFire,
     high,
-    "PUT\n" + entryTimeText + "\nT1+T2+T3\n" + (if pullbackFire then "Pullback" else "Clean"),
+    "PUT\n" +
+    AsText(
+        Floor(entryTimeSec / 3600) + Floor((entryTimeSec % 3600) / 60) / 100,
+        NumberFormat.TWO_DECIMAL_PLACES) + " ET\nT1+T2+T3\n" +
+    (if pullbackFire then "Pullback" else "Clean"),
     Color.RED,
     yes);
 

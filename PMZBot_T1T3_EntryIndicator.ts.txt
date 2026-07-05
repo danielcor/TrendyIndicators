@@ -169,21 +169,21 @@ def pmzHighDisplay = pmzHigh;
 def pmzLowDisplay = pmzLow;
 
 def inRthSession = SecondsFromTime(0930) >= 0 and SecondsFromTime(cnull) < 0;
-def showPmzBand = (ShowPMZBand or ShowDistanceChartStyle) and inRthSession;
-def showDistanceGate = ShowDistanceChartStyle and inRthSession;
+def pmzBandActive = (ShowPMZBand or ShowDistanceChartStyle) and inRthSession;
+def distanceGateActive = ShowDistanceChartStyle and inRthSession;
 def callGateCeiling = if !IsNaN(pmzLow) then pmzLow + MaxDistanceOutsidePmzPoints else Double.NaN;
 def putGateFloor = if !IsNaN(pmzHigh) then pmzHigh - MaxDistanceOutsidePmzPoints else Double.NaN;
 
 plot original_upper = if ShowOriginalPMZWhenAdjusted and AdjustPMZ then upper else Double.NaN;
 plot original_lower = if ShowOriginalPMZWhenAdjusted and AdjustPMZ then lower else Double.NaN;
-plot final_upper = if showPmzBand then pmzHigh else Double.NaN;
-plot final_lower = if showPmzBand then pmzLow else Double.NaN;
-plot callDistanceGate = if showDistanceGate then callGateCeiling else Double.NaN;
-plot putDistanceGate = if showDistanceGate then putGateFloor else Double.NaN;
-plot callSliverTop = if showDistanceGate and callGateCeiling > pmzHigh then callGateCeiling else Double.NaN;
-plot callSliverBottom = if showDistanceGate and callGateCeiling > pmzHigh then pmzHigh else Double.NaN;
-plot putSliverTop = if showDistanceGate and putGateFloor < pmzLow then pmzLow else Double.NaN;
-plot putSliverBottom = if showDistanceGate and putGateFloor < pmzLow then putGateFloor else Double.NaN;
+plot final_upper = if pmzBandActive then pmzHigh else Double.NaN;
+plot final_lower = if pmzBandActive then pmzLow else Double.NaN;
+plot callDistanceGate = if distanceGateActive then callGateCeiling else Double.NaN;
+plot putDistanceGate = if distanceGateActive then putGateFloor else Double.NaN;
+plot callSliverTop = if distanceGateActive and callGateCeiling > pmzHigh then callGateCeiling else Double.NaN;
+plot callSliverBottom = if distanceGateActive and callGateCeiling > pmzHigh then pmzHigh else Double.NaN;
+plot putSliverTop = if distanceGateActive and putGateFloor < pmzLow then pmzLow else Double.NaN;
+plot putSliverBottom = if distanceGateActive and putGateFloor < pmzLow then putGateFloor else Double.NaN;
 
 def ahh = if SecondsTillTime(cnull) == 0 then 0
     else if fut_time then

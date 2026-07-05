@@ -7,6 +7,8 @@
 # Parity target: EntryChartGenerator TestScenarios 01-12, 14-20, 22-23.
 # Import: TOS Studies -> Edit Studies -> Create -> paste; apply to a /ES 1-minute continuous chart.
 # TOS continuous /ES and the TOS LIS definition below are the canonical chart reference.
+# Lines must overlay the price axis. If PMZ/gate lines do not align with the ES scale, edit the
+# study on the chart -> gear icon -> make sure it is on the price subgraph (not a lower panel).
 #
 # Tr3ndy PMZ - https://www.trendytrading.co/scripts/script-shop#PMZ
 # Copyright trendytrading.co, for information visit https://www.trendytrading.co/utilities/terms-conditions
@@ -18,6 +20,13 @@
 # @danielcor - 2025 - Peakbot - change to add PMZ risk adjustment option (max clamp only)
 # Revision date: Aug 25,2025
 ##
+
+declare upper;
+declare once_per_bar;
+
+# Hidden anchor ties study scaling to the symbol price axis (prevents drift in a separate panel).
+plot ScaleAnchor = close;
+ScaleAnchor.Hide();
 
 input Premarket = {default "PRE", "ALL"};
 #hint futures: Use premarket or All when calculating PMZ.
@@ -216,16 +225,16 @@ plot AfterHoursLow = if ShowPMZBand and futures and (nperiod1 or nperiod2) then
 PmzBandHigh.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
 PmzBandLow.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
 PmzBandHigh.SetDefaultColor(color.Color("pbull"));
-PmzBandLow.SetDefaultColor(color.Color("pbear"));
-PmzBandHigh.SetLineWeight(2);
-PmzBandLow.SetLineWeight(2);
+PmzBandLow.SetDefaultColor(Color.MAGENTA);
+PmzBandHigh.SetLineWeight(3);
+PmzBandLow.SetLineWeight(3);
 
 DistanceCallGate.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
 DistancePutGate.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
-DistanceCallGate.SetDefaultColor(CreateColor(11, 79, 31));
-DistancePutGate.SetDefaultColor(CreateColor(11, 79, 31));
-DistanceCallGate.SetStyle(Curve.MEDIUM_DASH);
-DistancePutGate.SetStyle(Curve.MEDIUM_DASH);
+DistanceCallGate.SetDefaultColor(Color.YELLOW);
+DistancePutGate.SetDefaultColor(Color.ORANGE);
+DistanceCallGate.SetStyle(Curve.LONG_DASH);
+DistancePutGate.SetStyle(Curve.LONG_DASH);
 DistanceCallGate.SetLineWeight(2);
 DistancePutGate.SetLineWeight(2);
 
@@ -233,14 +242,16 @@ OriginalPmzHigh.SetDefaultColor(color.Color("original_gray"));
 OriginalPmzLow.SetDefaultColor(color.Color("original_gray"));
 OriginalPmzHigh.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
 OriginalPmzLow.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+OriginalPmzHigh.Hide();
+OriginalPmzLow.Hide();
 AfterHoursHigh.SetDefaultColor(color.Color("fbull"));
 AfterHoursLow.SetDefaultColor(color.Color("fbear"));
+AfterHoursHigh.Hide();
+AfterHoursLow.Hide();
 
-AddCloud(OriginalPmzHigh, OriginalPmzLow, color.Color("original_gray"), color.Color("original_gray"), yes);
-AddCloud(PmzBandHigh, PmzBandLow, color.Color("pbull"), color.Color("pbear"), no);
+AddCloud(PmzBandHigh, PmzBandLow, color.Color("pbull"), Color.MAGENTA, no);
 AddCloud(CallSliverLow, CallSliverHigh, CreateColor(52, 168, 83), CreateColor(52, 168, 83), no);
 AddCloud(PutSliverLow, PutSliverHigh, CreateColor(52, 168, 83), CreateColor(52, 168, 83), no);
-AddCloud(AfterHoursHigh, AfterHoursLow, color.Color("fbull"), color.Color("fbear"), no);
 
 script PmzEntryMachine {
     input prevCode = 0;
@@ -500,6 +511,22 @@ AddLabel(
     if callFire then Color.LIME else Color.ORANGE,
     location = Location.TOP_LEFT,
     size = FontSize.X_LARGE);
+AddLabel(
+    ShowStatusStrip,
+    "1m " +
+    (if oneAbove then "Above PMZ"
+    else if oneBelow then "Below PMZ"
+    else "Inside PMZ") +
+    " | Arm " +
+    (if cleanArm == 1 then "Call"
+    else if cleanArm == 2 then "Put"
+    else "None") +
+    " | Dist " +
+    AsText(callDistance, NumberFormat.TWO_DECIMAL_PLACES) + "/" +
+    AsText(putDistance, NumberFormat.TWO_DECIMAL_PLACES),
+    Color.LIME,
+    location = Location.TOP_LEFT,
+    size = FontSize.MEDIUM);
 
 AddLabel(Banner,
     "LIS: " + AsText(LIS, NumberFormat.TWO_DECIMAL_PLACES) +

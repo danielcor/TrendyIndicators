@@ -284,10 +284,10 @@ script PmzEntryMachine {
         else if pullbackMiss and !isFiveMinuteClose then budgetAfterOneMinute
         else budgetPrev;
 
-    plot NewCode = nextState + nextArm * 10 + nextBudget * 100;
-    plot CallFire = cleanCallFire or pullbackCallFire;
-    plot PutFire = cleanPutFire or pullbackPutFire;
-    plot PullbackFire = pullbackCallFire or pullbackPutFire;
+    plot newCode = nextState + nextArm * 10 + nextBudget * 100;
+    plot callFire = cleanCallFire or pullbackCallFire;
+    plot putFire = cleanPutFire or pullbackPutFire;
+    plot pullbackFire = pullbackCallFire or pullbackPutFire;
 }
 
 # Entry state machine.
@@ -337,10 +337,13 @@ def smState = CompoundValue(1,
         fiveCallWithinDistance,
         fivePutWithinDistance,
         MaxTriggerCandles,
-        EnableFullReversalFreshBreakout).NewCode,
+        EnableFullReversalFreshBreakout).newCode,
     0);
 
-def entryStep = PmzEntryMachine(
+def state = Floor(smState % 10);
+def cleanArm = Floor(Floor(smState / 10) % 10);
+def triggerBudget = Floor(smState / 100);
+def callFire = PmzEntryMachine(
     smState[1],
     isRthOpen,
     isFiveMinuteClose,
@@ -357,14 +360,43 @@ def entryStep = PmzEntryMachine(
     fiveCallWithinDistance,
     fivePutWithinDistance,
     MaxTriggerCandles,
-    EnableFullReversalFreshBreakout);
-
-def state = Floor(smState % 10);
-def cleanArm = Floor(Floor(smState / 10) % 10);
-def triggerBudget = Floor(smState / 100);
-def callFire = entryStep.CallFire;
-def putFire = entryStep.PutFire;
-def pullbackFire = entryStep.PullbackFire;
+    EnableFullReversalFreshBreakout).callFire;
+def putFire = PmzEntryMachine(
+    smState[1],
+    isRthOpen,
+    isFiveMinuteClose,
+    fiveSlot,
+    entriesAllowed,
+    oneAbove,
+    oneBelow,
+    fiveAbove,
+    fiveBelow,
+    fiveInside,
+    fiveOverlapsPmz,
+    callWithinDistance,
+    putWithinDistance,
+    fiveCallWithinDistance,
+    fivePutWithinDistance,
+    MaxTriggerCandles,
+    EnableFullReversalFreshBreakout).putFire;
+def pullbackFire = PmzEntryMachine(
+    smState[1],
+    isRthOpen,
+    isFiveMinuteClose,
+    fiveSlot,
+    entriesAllowed,
+    oneAbove,
+    oneBelow,
+    fiveAbove,
+    fiveBelow,
+    fiveInside,
+    fiveOverlapsPmz,
+    callWithinDistance,
+    putWithinDistance,
+    fiveCallWithinDistance,
+    fivePutWithinDistance,
+    MaxTriggerCandles,
+    EnableFullReversalFreshBreakout).pullbackFire;
 
 AddChartBubble(callFire, low, "CALL ^\nT1+T2+T3\n" + (if pullbackFire then "Pullback" else "Clean"), Color.GREEN, no);
 AddChartBubble(putFire, high, "PUT v\nT1+T2+T3\n" + (if pullbackFire then "Pullback" else "Clean"), Color.RED, yes);
@@ -376,18 +408,17 @@ AddLabel(Banner,
     (if gap == 1 then " (UP)" else " (DOWN/FLAT)"),
     if gap == 1 then Color.GREEN else Color.RED);
 
-# AsText only supports NumberFormat (no TIME). Render ET as H.MM, e.g. 7.35 = 7:35.
-def pmhClockText = if IsNaN(pmhTimeSec) then "n/a"
-    else AsText(
-        Floor(pmhTimeSec / 3600) + Floor((pmhTimeSec % 3600) / 60) / 100,
-        NumberFormat.TWO_DECIMAL_PLACES) + " ET";
-def pmlClockText = if IsNaN(pmlTimeSec) then "n/a"
-    else AsText(
-        Floor(pmlTimeSec / 3600) + Floor((pmlTimeSec % 3600) / 60) / 100,
-        NumberFormat.TWO_DECIMAL_PLACES) + " ET";
-
 AddLabel(Banner,
-    "PMH Time: " + pmhClockText + " | PML Time: " + pmlClockText,
+    "PMH Time: " +
+    (if IsNaN(pmhTimeSec) then "n/a" else
+        AsText(
+            Floor(pmhTimeSec / 3600) + Floor((pmhTimeSec % 3600) / 60) / 100,
+            NumberFormat.TWO_DECIMAL_PLACES) + " ET") +
+    " | PML Time: " +
+    (if IsNaN(pmlTimeSec) then "n/a" else
+        AsText(
+            Floor(pmlTimeSec / 3600) + Floor((pmlTimeSec % 3600) / 60) / 100,
+            NumberFormat.TWO_DECIMAL_PLACES) + " ET"),
     Color.CYAN);
 
 AddLabel(Banner,

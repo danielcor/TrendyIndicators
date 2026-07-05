@@ -200,6 +200,96 @@ AddCloud(original_upper, original_lower, color.Color("original_gray"), color.Col
 AddCloud(final_upper, final_lower, color.Color("pbull"), color.Color("pbear"), no);
 AddCloud(ah_upper, ahler, color.Color("fbull"), color.Color("fbear"), no);
 
+script PmzEntryMachine {
+    input prevCode = 0;
+    input isRthOpen = no;
+    input isFiveMinuteClose = no;
+    input fiveSlot = 0;
+    input entriesAllowed = no;
+    input oneAbove = no;
+    input oneBelow = no;
+    input fiveAbove = no;
+    input fiveBelow = no;
+    input fiveInside = no;
+    input fiveOverlapsPmz = no;
+    input callWithinDistance = no;
+    input putWithinDistance = no;
+    input fiveCallWithinDistance = no;
+    input fivePutWithinDistance = no;
+    input maxTriggerCandles = 5;
+    input enableFullReversalFreshBreakout = yes;
+
+    def statePrev = Floor(Mod(prevCode, 10));
+    def armPrev = Floor(Mod(prevCode / 10, 10));
+    def budgetPrev = Floor(prevCode / 100);
+
+    def crossedThroughOutside = isFiveMinuteClose and fiveOverlapsPmz and (fiveAbove or fiveBelow);
+    def stateForFiveMinute = if crossedThroughOutside then 0 else statePrev;
+    def fullReversalToCall = enableFullReversalFreshBreakout and stateForFiveMinute == 4 and fiveAbove;
+    def fullReversalToPut = enableFullReversalFreshBreakout and stateForFiveMinute == 3 and fiveBelow;
+    def isFirstEntryGateBoundary = isFiveMinuteClose and fiveSlot == 1;
+    def crossThroughCleanCall = isFiveMinuteClose and stateForFiveMinute == 2 and fiveAbove and fiveCallWithinDistance;
+    def crossThroughCleanPut = isFiveMinuteClose and stateForFiveMinute == 1 and fiveBelow and fivePutWithinDistance;
+    def sameBarCleanCall = isFiveMinuteClose and fiveAbove and fiveCallWithinDistance and
+        (fullReversalToCall or (stateForFiveMinute == 0 and isFirstEntryGateBoundary) or crossThroughCleanCall);
+    def sameBarCleanPut = isFiveMinuteClose and fiveBelow and fivePutWithinDistance and
+        (fullReversalToPut or (stateForFiveMinute == 0 and isFirstEntryGateBoundary) or crossThroughCleanPut);
+
+    def cleanCallFire = entriesAllowed and oneAbove and callWithinDistance and (armPrev == 1 or sameBarCleanCall);
+    def cleanPutFire = entriesAllowed and oneBelow and putWithinDistance and (armPrev == 2 or sameBarCleanPut);
+    def pullbackCallFire = entriesAllowed and statePrev == 1 and oneAbove and callWithinDistance;
+    def pullbackPutFire = entriesAllowed and statePrev == 2 and oneBelow and putWithinDistance;
+
+    def cleanArmConsumed = cleanCallFire or cleanPutFire or
+        (armPrev == 1 and (oneBelow or (entriesAllowed and oneAbove and !callWithinDistance))) or
+        (armPrev == 2 and (oneAbove or (entriesAllowed and oneBelow and !putWithinDistance)));
+
+    def pullbackMiss = (statePrev == 1 or statePrev == 2) and !pullbackCallFire and !pullbackPutFire;
+    def budgetAfterOneMinute = if pullbackMiss and !isFiveMinuteClose then budgetPrev - 1 else budgetPrev;
+    def pullbackTimedOut = pullbackMiss and !isFiveMinuteClose and budgetAfterOneMinute <= 0;
+    def armsCleanCall = isRthOpen and oneAbove or
+        (isFiveMinuteClose and fiveAbove and (stateForFiveMinute == 0 or fullReversalToCall));
+    def armsCleanPut = isRthOpen and oneBelow or
+        (isFiveMinuteClose and fiveBelow and (stateForFiveMinute == 0 or fullReversalToPut));
+
+    def nextState =
+        if isRthOpen then
+            if oneAbove then 3 else if oneBelow then 4 else 0
+        else if pullbackCallFire or cleanCallFire then 3
+        else if pullbackPutFire or cleanPutFire then 4
+        else if pullbackTimedOut then 0
+        else if isFiveMinuteClose then
+            if fiveInside then
+                if stateForFiveMinute == 3 then 1
+                else if stateForFiveMinute == 4 then 2
+                else stateForFiveMinute
+            else if fiveAbove then 3
+            else if fiveBelow then 4
+            else stateForFiveMinute
+        else statePrev;
+
+    def nextArm =
+        if cleanCallFire or cleanPutFire then 0
+        else if armsCleanCall then 1
+        else if armsCleanPut then 2
+        else if cleanArmConsumed then 0
+        else armPrev;
+
+    def nextBudget =
+        if isRthOpen then 0
+        else if pullbackCallFire or pullbackPutFire or cleanCallFire or cleanPutFire then 0
+        else if pullbackTimedOut then 0
+        else if isFiveMinuteClose and fiveInside and stateForFiveMinute == 3 then maxTriggerCandles
+        else if isFiveMinuteClose and fiveInside and stateForFiveMinute == 4 then maxTriggerCandles
+        else if pullbackMiss and !isFiveMinuteClose then budgetAfterOneMinute
+        else budgetPrev;
+
+    plot NewCode = nextState + nextArm * 10 + nextBudget * 100;
+    plot CallFire = cleanCallFire or pullbackCallFire;
+    plot PutFire = cleanPutFire or pullbackPutFire;
+    plot PullbackFire = pullbackCallFire or pullbackPutFire;
+}
+
 # Entry state machine.
 # State codes: 0 InPMZ_NoPullback, 1 InPMZ_CallPullback, 2 InPMZ_PutPullback,
 # 3 OutsidePmz(Call), 4 OutsidePmz(Put). Clean-arm codes: 0 none, 1 Call, 2 Put.
@@ -229,81 +319,52 @@ def fivePutDistance = pmzHigh - fiveClose;
 def fiveCallWithinDistance = fiveCallDistance <= MaxDistanceOutsidePmzPoints;
 def fivePutWithinDistance = fivePutDistance <= MaxDistanceOutsidePmzPoints;
 
-def statePrev = CompoundValue(1, state[1], 0);
-def armPrev = CompoundValue(1, cleanArm[1], 0);
-def budgetPrev = CompoundValue(1, triggerBudget[1], 0);
-
-def crossedThroughOutside = isFiveMinuteClose and fiveOverlapsPmz and (fiveAbove or fiveBelow);
-def stateForFiveMinute = if crossedThroughOutside then 0 else statePrev;
-def fullReversalToCall = EnableFullReversalFreshBreakout and stateForFiveMinute == 4 and fiveAbove;
-def fullReversalToPut = EnableFullReversalFreshBreakout and stateForFiveMinute == 3 and fiveBelow;
-
-def isFirstEntryGateBoundary = isFiveMinuteClose and fiveSlot == 1;
-def crossThroughCleanCall = isFiveMinuteClose and stateForFiveMinute == 2 and fiveAbove and fiveCallWithinDistance;
-def crossThroughCleanPut = isFiveMinuteClose and stateForFiveMinute == 1 and fiveBelow and fivePutWithinDistance;
-def sameBarCleanCall = isFiveMinuteClose and fiveAbove and fiveCallWithinDistance and
-    (fullReversalToCall or (stateForFiveMinute == 0 and isFirstEntryGateBoundary) or crossThroughCleanCall);
-def sameBarCleanPut = isFiveMinuteClose and fiveBelow and fivePutWithinDistance and
-    (fullReversalToPut or (stateForFiveMinute == 0 and isFirstEntryGateBoundary) or crossThroughCleanPut);
-
-def cleanCallFire = entriesAllowed and oneAbove and callWithinDistance and (armPrev == 1 or sameBarCleanCall);
-def cleanPutFire = entriesAllowed and oneBelow and putWithinDistance and (armPrev == 2 or sameBarCleanPut);
-def pullbackCallFire = entriesAllowed and statePrev == 1 and oneAbove and callWithinDistance;
-def pullbackPutFire = entriesAllowed and statePrev == 2 and oneBelow and putWithinDistance;
-
-def cleanArmConsumed = cleanCallFire or cleanPutFire or
-    (armPrev == 1 and (oneBelow or (entriesAllowed and oneAbove and !callWithinDistance))) or
-    (armPrev == 2 and (oneAbove or (entriesAllowed and oneBelow and !putWithinDistance)));
-
-def pullbackMiss = (statePrev == 1 or statePrev == 2) and !pullbackCallFire and !pullbackPutFire;
-def budgetAfterOneMinute = if pullbackMiss and !isFiveMinuteClose then budgetPrev - 1 else budgetPrev;
-def pullbackTimedOut = pullbackMiss and !isFiveMinuteClose and budgetAfterOneMinute <= 0;
-def armsCleanCall = isRthOpen and oneAbove or
-    (isFiveMinuteClose and fiveAbove and (stateForFiveMinute == 0 or fullReversalToCall));
-def armsCleanPut = isRthOpen and oneBelow or
-    (isFiveMinuteClose and fiveBelow and (stateForFiveMinute == 0 or fullReversalToPut));
-
-def state = CompoundValue(1,
-    if isRthOpen then
-        if oneAbove then 3
-        else if oneBelow then 4
-        else 0
-    else if pullbackCallFire or cleanCallFire then 3
-    else if pullbackPutFire or cleanPutFire then 4
-    else if pullbackTimedOut then 0
-    else if isFiveMinuteClose then
-        if fiveInside then
-            if stateForFiveMinute == 3 then 1
-            else if stateForFiveMinute == 4 then 2
-            else stateForFiveMinute
-        else if fiveAbove then 3
-        else if fiveBelow then 4
-        else stateForFiveMinute
-    else statePrev,
+def smState = CompoundValue(1,
+    PmzEntryMachine(
+        smState[1],
+        isRthOpen,
+        isFiveMinuteClose,
+        fiveSlot,
+        entriesAllowed,
+        oneAbove,
+        oneBelow,
+        fiveAbove,
+        fiveBelow,
+        fiveInside,
+        fiveOverlapsPmz,
+        callWithinDistance,
+        putWithinDistance,
+        fiveCallWithinDistance,
+        fivePutWithinDistance,
+        MaxTriggerCandles,
+        EnableFullReversalFreshBreakout).NewCode,
     0);
 
-def triggerBudget = CompoundValue(1,
-    if isRthOpen then 0
-    else if pullbackCallFire or pullbackPutFire or cleanCallFire or cleanPutFire then 0
-    else if pullbackTimedOut then 0
-    else if isFiveMinuteClose and fiveInside and stateForFiveMinute == 3 then MaxTriggerCandles
-    else if isFiveMinuteClose and fiveInside and stateForFiveMinute == 4 then MaxTriggerCandles
-    else if pullbackMiss and !isFiveMinuteClose then budgetAfterOneMinute
-    else budgetPrev,
-    0);
+def entryStep = PmzEntryMachine(
+    smState[1],
+    isRthOpen,
+    isFiveMinuteClose,
+    fiveSlot,
+    entriesAllowed,
+    oneAbove,
+    oneBelow,
+    fiveAbove,
+    fiveBelow,
+    fiveInside,
+    fiveOverlapsPmz,
+    callWithinDistance,
+    putWithinDistance,
+    fiveCallWithinDistance,
+    fivePutWithinDistance,
+    MaxTriggerCandles,
+    EnableFullReversalFreshBreakout);
 
-def cleanArm = CompoundValue(1,
-    if cleanCallFire or cleanPutFire then 0
-    else if armsCleanCall then 1
-    else if armsCleanPut then 2
-    else if cleanArmConsumed then 0
-    else armPrev,
-    0);
-
-def callFire = cleanCallFire or pullbackCallFire;
-def putFire = cleanPutFire or pullbackPutFire;
-def pullbackFire = pullbackCallFire or pullbackPutFire;
-def cleanFire = cleanCallFire or cleanPutFire;
+def state = Floor(Mod(smState, 10));
+def cleanArm = Floor(Mod(smState / 10, 10));
+def triggerBudget = Floor(smState / 100);
+def callFire = entryStep.CallFire;
+def putFire = entryStep.PutFire;
+def pullbackFire = entryStep.PullbackFire;
 
 AddChartBubble(callFire, low, "CALL ^\nT1+T2+T3\n" + (if pullbackFire then "Pullback" else "Clean"), Color.GREEN, no);
 AddChartBubble(putFire, high, "PUT v\nT1+T2+T3\n" + (if pullbackFire then "Pullback" else "Clean"), Color.RED, yes);
@@ -316,8 +377,8 @@ AddLabel(Banner,
     if gap == 1 then Color.GREEN else Color.RED);
 
 AddLabel(Banner,
-    "PMH Time: " + AsText(pmhTime, TimeFormat.TIME) +
-    " | PML Time: " + AsText(pmlTime, TimeFormat.TIME),
+    "PMH Time: " + (if !IsNaN(pmhTime) then AsText(pmhTime, NumberFormat.TIME) else "n/a") +
+    " | PML Time: " + (if !IsNaN(pmlTime) then AsText(pmlTime, NumberFormat.TIME) else "n/a"),
     Color.CYAN);
 
 AddLabel(Banner,

@@ -157,10 +157,10 @@ def adjusted_lower = if AdjustPMZ and !IsNaN(pmz_center) and !IsNaN(adjusted_ris
     pmz_center - (adjusted_risk / 2)
     else lower;
 
-def pmzHigh = if AdjustPMZ then adjusted_upper else upper;
-def pmzLow = if AdjustPMZ then adjusted_lower else lower;
-def pmzHighDisplay = if AdjustPMZ then adjusted_upper else pmzHighOriginal;
-def pmzLowDisplay = if AdjustPMZ then adjusted_lower else pmzLowOriginal;
+def pmzHigh = if AdjustPMZ then adjusted_upper else pmzHighOriginal;
+def pmzLow = if AdjustPMZ then adjusted_lower else pmzLowOriginal;
+def pmzHighDisplay = pmzHigh;
+def pmzLowDisplay = pmzLow;
 
 plot original_upper = if ShowOriginalPMZWhenAdjusted and AdjustPMZ then upper else Double.NaN;
 plot original_lower = if ShowOriginalPMZWhenAdjusted and AdjustPMZ then lower else Double.NaN;

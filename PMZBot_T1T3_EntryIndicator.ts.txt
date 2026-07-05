@@ -219,8 +219,8 @@ script PmzEntryMachine {
     input maxTriggerCandles = 5;
     input enableFullReversalFreshBreakout = yes;
 
-    def statePrev = Floor(Mod(prevCode, 10));
-    def armPrev = Floor(Mod(prevCode / 10, 10));
+    def statePrev = Floor(prevCode % 10);
+    def armPrev = Floor(Floor(prevCode / 10) % 10);
     def budgetPrev = Floor(prevCode / 100);
 
     def crossedThroughOutside = isFiveMinuteClose and fiveOverlapsPmz and (fiveAbove or fiveBelow);
@@ -359,8 +359,8 @@ def entryStep = PmzEntryMachine(
     MaxTriggerCandles,
     EnableFullReversalFreshBreakout);
 
-def state = Floor(Mod(smState, 10));
-def cleanArm = Floor(Mod(smState / 10, 10));
+def state = Floor(smState % 10);
+def cleanArm = Floor(Floor(smState / 10) % 10);
 def triggerBudget = Floor(smState / 100);
 def callFire = entryStep.CallFire;
 def putFire = entryStep.PutFire;
@@ -379,11 +379,11 @@ AddLabel(Banner,
 # AsText only supports NumberFormat (no TIME). Render ET as H.MM, e.g. 7.35 = 7:35.
 def pmhClockText = if IsNaN(pmhTimeSec) then "n/a"
     else AsText(
-        Floor(pmhTimeSec / 3600) + Floor(Mod(pmhTimeSec, 3600) / 60) / 100,
+        Floor(pmhTimeSec / 3600) + Floor((pmhTimeSec % 3600) / 60) / 100,
         NumberFormat.TWO_DECIMAL_PLACES) + " ET";
 def pmlClockText = if IsNaN(pmlTimeSec) then "n/a"
     else AsText(
-        Floor(pmlTimeSec / 3600) + Floor(Mod(pmlTimeSec, 3600) / 60) / 100,
+        Floor(pmlTimeSec / 3600) + Floor((pmlTimeSec % 3600) / 60) / 100,
         NumberFormat.TWO_DECIMAL_PLACES) + " ET";
 
 AddLabel(Banner,

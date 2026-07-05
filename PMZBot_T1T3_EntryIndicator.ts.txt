@@ -171,19 +171,22 @@ def pmzLowDisplay = pmzLow;
 def inRthSession = SecondsFromTime(0930) >= 0 and SecondsFromTime(cnull) < 0;
 def pmzBandActive = (ShowPMZBand or ShowDistanceChartStyle) and inRthSession;
 def distanceGateActive = ShowDistanceChartStyle and inRthSession;
-def callGateCeiling = if !IsNaN(pmzLow) then pmzLow + MaxDistanceOutsidePmzPoints else Double.NaN;
-def putGateFloor = if !IsNaN(pmzHigh) then pmzHigh - MaxDistanceOutsidePmzPoints else Double.NaN;
+def bandLocked = pmzBandActive and !IsNaN(pmzHigh) and !IsNaN(pmzLow);
+def callGateCeiling = if bandLocked then pmzLow + MaxDistanceOutsidePmzPoints else Double.NaN;
+def putGateFloor = if bandLocked then pmzHigh - MaxDistanceOutsidePmzPoints else Double.NaN;
+def callSliverValid = distanceGateActive and callGateCeiling > pmzHigh;
+def putSliverValid = distanceGateActive and putGateFloor < pmzLow;
 
-plot original_upper = if ShowOriginalPMZWhenAdjusted and AdjustPMZ then upper else Double.NaN;
-plot original_lower = if ShowOriginalPMZWhenAdjusted and AdjustPMZ then lower else Double.NaN;
-plot final_upper = if pmzBandActive then pmzHigh else Double.NaN;
-plot final_lower = if pmzBandActive then pmzLow else Double.NaN;
-plot callDistanceGate = if distanceGateActive then callGateCeiling else Double.NaN;
-plot putDistanceGate = if distanceGateActive then putGateFloor else Double.NaN;
-plot callSliverTop = if distanceGateActive and callGateCeiling > pmzHigh then callGateCeiling else Double.NaN;
-plot callSliverBottom = if distanceGateActive and callGateCeiling > pmzHigh then pmzHigh else Double.NaN;
-plot putSliverTop = if distanceGateActive and putGateFloor < pmzLow then pmzLow else Double.NaN;
-plot putSliverBottom = if distanceGateActive and putGateFloor < pmzLow then putGateFloor else Double.NaN;
+plot OriginalPmzHigh = if ShowOriginalPMZWhenAdjusted and AdjustPMZ and bandLocked then upper else Double.NaN;
+plot OriginalPmzLow = if ShowOriginalPMZWhenAdjusted and AdjustPMZ and bandLocked then lower else Double.NaN;
+plot PmzBandHigh = if bandLocked then pmzHigh else Double.NaN;
+plot PmzBandLow = if bandLocked then pmzLow else Double.NaN;
+plot DistanceCallGate = if distanceGateActive and !IsNaN(callGateCeiling) then callGateCeiling else Double.NaN;
+plot DistancePutGate = if distanceGateActive and !IsNaN(putGateFloor) then putGateFloor else Double.NaN;
+plot CallSliverHigh = if callSliverValid then callGateCeiling else Double.NaN;
+plot CallSliverLow = if callSliverValid then pmzHigh else Double.NaN;
+plot PutSliverHigh = if putSliverValid then pmzLow else Double.NaN;
+plot PutSliverLow = if putSliverValid then putGateFloor else Double.NaN;
 
 def ahh = if SecondsTillTime(cnull) == 0 then 0
     else if fut_time then
@@ -199,38 +202,43 @@ def ah_set = if fut_time then
     if o < LIS then 0 else 1
     else ah_set[1];
 
-plot ah_upper = if ShowPMZBand and futures and (nperiod1 or nperiod2) then
+plot AfterHoursHigh = if ShowPMZBand and futures and (nperiod1 or nperiod2) then
     if ah_set then
         ahh - ((ahh - ahl) * .2) else ahl + ((ahh - ahl) * .2)
     else Double.NaN;
 
-plot ahler = if ShowPMZBand and futures and (nperiod1 or nperiod2) then
+plot AfterHoursLow = if ShowPMZBand and futures and (nperiod1 or nperiod2) then
     if ah_set then ahh - ((ahh - ahl) * .4) else ahl + ((ahh - ahl) * .4)
     else Double.NaN;
 
-original_upper.SetDefaultColor(color.Color("original_gray"));
-original_lower.SetDefaultColor(color.Color("original_gray"));
-final_upper.SetDefaultColor(Color.DARK_GRAY);
-final_lower.SetDefaultColor(Color.DARK_GRAY);
-final_upper.SetStyle(Curve.FIRM);
-final_lower.SetStyle(Curve.FIRM);
-final_upper.SetLineWeight(2);
-final_lower.SetLineWeight(2);
-callDistanceGate.SetDefaultColor(CreateColor(11, 79, 31));
-putDistanceGate.SetDefaultColor(CreateColor(11, 79, 31));
-callDistanceGate.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
-putDistanceGate.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
-callDistanceGate.SetStyle(Curve.MEDIUM_DASH);
-putDistanceGate.SetStyle(Curve.MEDIUM_DASH);
-callDistanceGate.SetLineWeight(2);
-putDistanceGate.SetLineWeight(2);
-ah_upper.SetDefaultColor(color.Color("fbull"));
-ahler.SetDefaultColor(color.Color("fbear"));
-AddCloud(original_upper, original_lower, color.Color("original_gray"), color.Color("original_gray"), yes);
-AddCloud(final_upper, final_lower, Color.GRAY, Color.GRAY, no);
-AddCloud(callSliverBottom, callSliverTop, CreateColor(52, 168, 83), CreateColor(52, 168, 83), no);
-AddCloud(putSliverBottom, putSliverTop, CreateColor(52, 168, 83), CreateColor(52, 168, 83), no);
-AddCloud(ah_upper, ahler, color.Color("fbull"), color.Color("fbear"), no);
+PmzBandHigh.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+PmzBandLow.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+PmzBandHigh.SetDefaultColor(color.Color("pbull"));
+PmzBandLow.SetDefaultColor(color.Color("pbear"));
+PmzBandHigh.SetLineWeight(2);
+PmzBandLow.SetLineWeight(2);
+
+DistanceCallGate.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+DistancePutGate.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+DistanceCallGate.SetDefaultColor(CreateColor(11, 79, 31));
+DistancePutGate.SetDefaultColor(CreateColor(11, 79, 31));
+DistanceCallGate.SetStyle(Curve.MEDIUM_DASH);
+DistancePutGate.SetStyle(Curve.MEDIUM_DASH);
+DistanceCallGate.SetLineWeight(2);
+DistancePutGate.SetLineWeight(2);
+
+OriginalPmzHigh.SetDefaultColor(color.Color("original_gray"));
+OriginalPmzLow.SetDefaultColor(color.Color("original_gray"));
+OriginalPmzHigh.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+OriginalPmzLow.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+AfterHoursHigh.SetDefaultColor(color.Color("fbull"));
+AfterHoursLow.SetDefaultColor(color.Color("fbear"));
+
+AddCloud(OriginalPmzHigh, OriginalPmzLow, color.Color("original_gray"), color.Color("original_gray"), yes);
+AddCloud(PmzBandHigh, PmzBandLow, color.Color("pbull"), color.Color("pbear"), no);
+AddCloud(CallSliverLow, CallSliverHigh, CreateColor(52, 168, 83), CreateColor(52, 168, 83), no);
+AddCloud(PutSliverLow, PutSliverHigh, CreateColor(52, 168, 83), CreateColor(52, 168, 83), no);
+AddCloud(AfterHoursHigh, AfterHoursLow, color.Color("fbull"), color.Color("fbear"), no);
 
 script PmzEntryMachine {
     input prevCode = 0;
@@ -339,7 +347,7 @@ script PmzEntryMachine {
 # 3 OutsidePmz(Call), 4 OutsidePmz(Put). Clean-arm codes: 0 none, 1 Call, 2 Put.
 def secFromOpen = SecondsFromTime(0930);
 def fiveSlot = if secFromOpen >= 0 then Floor(secFromOpen / 300) else -1;
-def isFiveMinuteClose = fiveSlot >= 1 and fiveSlot != fiveSlot[1];
+def isFiveMinuteClose = GetAggregationPeriod() <= AggregationPeriod.MIN and fiveSlot >= 1 and fiveSlot != fiveSlot[1];
 def isRthOpen = SecondsTillTime(0930) == 0;
 def entriesAllowed = SecondsFromTime(EntryGateTimeET) >= 0 and SecondsFromTime(cnull) < 0;
 
@@ -428,20 +436,54 @@ def pullbackFire = pullbackCallFire or pullbackPutFire;
 # Entry markers: green/red triangles at the 1-minute close (same placement as /distance chart).
 plot CallEntryMarker = if ShowEntryMarkers and callFire then oneClose else Double.NaN;
 CallEntryMarker.SetPaintingStrategy(PaintingStrategy.ARROW_UP);
-CallEntryMarker.SetLineWeight(4);
+CallEntryMarker.SetLineWeight(5);
 CallEntryMarker.SetDefaultColor(CreateColor(52, 168, 83));
 CallEntryMarker.HideBubble();
 
 plot PutEntryMarker = if ShowEntryMarkers and putFire then oneClose else Double.NaN;
 PutEntryMarker.SetPaintingStrategy(PaintingStrategy.ARROW_DOWN);
-PutEntryMarker.SetLineWeight(4);
+PutEntryMarker.SetLineWeight(5);
 PutEntryMarker.SetDefaultColor(CreateColor(234, 67, 53));
 PutEntryMarker.HideBubble();
+
+def entryTimeSec = SecondsFromTime(0);
+AddChartBubble(
+    ShowEntryMarkers and callFire,
+    oneClose,
+    "CALL " +
+    AsText(
+        Floor(entryTimeSec / 3600) + Floor((entryTimeSec % 3600) / 60) / 100,
+        NumberFormat.TWO_DECIMAL_PLACES) + " ET",
+    CreateColor(52, 168, 83),
+    yes);
+AddChartBubble(
+    ShowEntryMarkers and putFire,
+    oneClose,
+    "PUT " +
+    AsText(
+        Floor(entryTimeSec / 3600) + Floor((entryTimeSec % 3600) / 60) / 100,
+        NumberFormat.TWO_DECIMAL_PLACES) + " ET",
+    CreateColor(234, 67, 53),
+    no);
 
 def neutralAtOpen = isRthOpen;
 def neutralOnFiveInside = isFiveMinuteClose and fiveInside;
 AddVerticalLine(ShowNeutralLines and neutralAtOpen, "Neutral", CreateColor(161, 66, 244), Curve.SHORT_DASH);
 AddVerticalLine(ShowNeutralLines and neutralOnFiveInside, "Neutral", CreateColor(161, 66, 244), Curve.SHORT_DASH);
+
+# Compact session strip — always on so PMZ/gate values are visible without full Banner.
+AddLabel(yes,
+    "PMZ " +
+    AsText(pmzLowDisplay, NumberFormat.TWO_DECIMAL_PLACES) + "-" +
+    AsText(pmzHighDisplay, NumberFormat.TWO_DECIMAL_PLACES) +
+    " | +/- " + AsText(MaxDistanceOutsidePmzPoints, NumberFormat.TWO_DECIMAL_PLACES) +
+    " gate " +
+    AsText(callGateCeiling, NumberFormat.TWO_DECIMAL_PLACES) + "/" +
+    AsText(putGateFloor, NumberFormat.TWO_DECIMAL_PLACES) +
+    (if callFire or putFire then " | ENTRY" else ""),
+    if callFire then CreateColor(52, 168, 83)
+    else if putFire then CreateColor(234, 67, 53)
+    else Color.WHITE);
 
 AddLabel(Banner,
     "LIS: " + AsText(LIS, NumberFormat.TWO_DECIMAL_PLACES) +

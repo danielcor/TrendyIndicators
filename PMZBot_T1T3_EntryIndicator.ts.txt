@@ -242,13 +242,12 @@ OriginalPmzHigh.SetDefaultColor(color.Color("original_gray"));
 OriginalPmzLow.SetDefaultColor(color.Color("original_gray"));
 OriginalPmzHigh.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
 OriginalPmzLow.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
-OriginalPmzHigh.Hide();
-OriginalPmzLow.Hide();
 AfterHoursHigh.SetDefaultColor(color.Color("fbull"));
 AfterHoursLow.SetDefaultColor(color.Color("fbear"));
 AfterHoursHigh.Hide();
 AfterHoursLow.Hide();
 
+AddCloud(OriginalPmzHigh, OriginalPmzLow, color.Color("original_gray"), color.Color("original_gray"), yes);
 AddCloud(PmzBandHigh, PmzBandLow, color.Color("pbull"), Color.MAGENTA, no);
 AddCloud(CallSliverLow, CallSliverHigh, CreateColor(52, 168, 83), CreateColor(52, 168, 83), no);
 AddCloud(PutSliverLow, PutSliverHigh, CreateColor(52, 168, 83), CreateColor(52, 168, 83), no);

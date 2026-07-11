@@ -290,17 +290,18 @@ script PmzEntryMachine {
     def armPrev = Floor(Floor(prevCode / 10) % 10);
     def budgetPrev = Floor(prevCode / 100);
 
-    def crossedThroughOutside = fiveCloseBar and fiveOverlapsBand and (fiveAboveBar or fiveBelowBar);
-    def stateForFiveMinute = if crossedThroughOutside then 0 else statePrev;
-    def fullReversalToCall = fullReversalEnabled and stateForFiveMinute == 4 and fiveAboveBar;
-    def fullReversalToPut = fullReversalEnabled and stateForFiveMinute == 3 and fiveBelowBar;
+    # Full-reversal / cross-through arming must key off the RAW previous state (matching
+    # PmzEntryStateMachine.IsFullReversal, which reads previousState before any transition).
+    # Forcing state to 0 on a crossing candle would self-defeat the == 3/4/1/2 checks below.
+    def fullReversalToCall = fullReversalEnabled and statePrev == 4 and fiveAboveBar;
+    def fullReversalToPut = fullReversalEnabled and statePrev == 3 and fiveBelowBar;
     def isFirstEntryGateBoundary = fiveCloseBar and fiveSlot == 1;
-    def crossThroughCleanCall = fiveCloseBar and stateForFiveMinute == 2 and fiveAboveBar and fiveCallDistanceOk;
-    def crossThroughCleanPut = fiveCloseBar and stateForFiveMinute == 1 and fiveBelowBar and fivePutDistanceOk;
+    def crossThroughCleanCall = fiveCloseBar and statePrev == 2 and fiveAboveBar and fiveCallDistanceOk;
+    def crossThroughCleanPut = fiveCloseBar and statePrev == 1 and fiveBelowBar and fivePutDistanceOk;
     def sameBarCleanCall = fiveCloseBar and fiveAboveBar and fiveCallDistanceOk and
-        (fullReversalToCall or (stateForFiveMinute == 0 and isFirstEntryGateBoundary) or crossThroughCleanCall);
+        (fullReversalToCall or (statePrev == 0 and isFirstEntryGateBoundary) or crossThroughCleanCall);
     def sameBarCleanPut = fiveCloseBar and fiveBelowBar and fivePutDistanceOk and
-        (fullReversalToPut or (stateForFiveMinute == 0 and isFirstEntryGateBoundary) or crossThroughCleanPut);
+        (fullReversalToPut or (statePrev == 0 and isFirstEntryGateBoundary) or crossThroughCleanPut);
 
     def cleanCallFire = entriesOk and oneAboveBar and callDistanceOk and (armPrev == 1 or sameBarCleanCall);
     def cleanPutFire = entriesOk and oneBelowBar and putDistanceOk and (armPrev == 2 or sameBarCleanPut);
@@ -315,9 +316,9 @@ script PmzEntryMachine {
     def budgetAfterOneMinute = if pullbackMiss and !fiveCloseBar then budgetPrev - 1 else budgetPrev;
     def pullbackTimedOut = pullbackMiss and !fiveCloseBar and budgetAfterOneMinute <= 0;
     def armsCleanCall = rthOpen and oneAboveBar or
-        (fiveCloseBar and fiveAboveBar and (stateForFiveMinute == 0 or fullReversalToCall));
+        (fiveCloseBar and fiveAboveBar and (statePrev == 0 or fullReversalToCall));
     def armsCleanPut = rthOpen and oneBelowBar or
-        (fiveCloseBar and fiveBelowBar and (stateForFiveMinute == 0 or fullReversalToPut));
+        (fiveCloseBar and fiveBelowBar and (statePrev == 0 or fullReversalToPut));
 
     def nextState =
         if rthOpen then
@@ -327,12 +328,12 @@ script PmzEntryMachine {
         else if pullbackTimedOut then 0
         else if fiveCloseBar then
             if fiveInsideBar then
-                if stateForFiveMinute == 3 then 1
-                else if stateForFiveMinute == 4 then 2
-                else stateForFiveMinute
+                if statePrev == 3 then 1
+                else if statePrev == 4 then 2
+                else statePrev
             else if fiveAboveBar then 3
             else if fiveBelowBar then 4
-            else stateForFiveMinute
+            else statePrev
         else statePrev;
 
     def nextArm =
@@ -346,8 +347,8 @@ script PmzEntryMachine {
         if rthOpen then 0
         else if pullbackCallFire or pullbackPutFire or cleanCallFire or cleanPutFire then 0
         else if pullbackTimedOut then 0
-        else if fiveCloseBar and fiveInsideBar and stateForFiveMinute == 3 then maxTriggerCandles
-        else if fiveCloseBar and fiveInsideBar and stateForFiveMinute == 4 then maxTriggerCandles
+        else if fiveCloseBar and fiveInsideBar and statePrev == 3 then maxTriggerCandles
+        else if fiveCloseBar and fiveInsideBar and statePrev == 4 then maxTriggerCandles
         else if pullbackMiss and !fiveCloseBar then budgetAfterOneMinute
         else budgetPrev;
 
@@ -426,17 +427,15 @@ def triggerBudget = Floor(smState / 100);
 # Entry fires are computed at study scope so markers use native booleans, not script yes/no inputs.
 def statePrev = Floor(smState[1] % 10);
 def armPrev = Floor(Floor(smState[1] / 10) % 10);
-def crossedThroughOutsideFire = isFiveMinuteClose and fiveOverlapsPmz and (fiveAbove or fiveBelow);
-def stateForFiveMinuteFire = if crossedThroughOutsideFire then 0 else statePrev;
-def fullReversalToCallFire = EnableFullReversalFreshBreakout and stateForFiveMinuteFire == 4 and fiveAbove;
-def fullReversalToPutFire = EnableFullReversalFreshBreakout and stateForFiveMinuteFire == 3 and fiveBelow;
+def fullReversalToCallFire = EnableFullReversalFreshBreakout and statePrev == 4 and fiveAbove;
+def fullReversalToPutFire = EnableFullReversalFreshBreakout and statePrev == 3 and fiveBelow;
 def isFirstEntryGateBoundaryFire = isFiveMinuteClose and fiveSlot == 1;
-def crossThroughCleanCallFire = isFiveMinuteClose and stateForFiveMinuteFire == 2 and fiveAbove and fiveCallWithinDistance;
-def crossThroughCleanPutFire = isFiveMinuteClose and stateForFiveMinuteFire == 1 and fiveBelow and fivePutWithinDistance;
+def crossThroughCleanCallFire = isFiveMinuteClose and statePrev == 2 and fiveAbove and fiveCallWithinDistance;
+def crossThroughCleanPutFire = isFiveMinuteClose and statePrev == 1 and fiveBelow and fivePutWithinDistance;
 def sameBarCleanCallFire = isFiveMinuteClose and fiveAbove and fiveCallWithinDistance and
-    (fullReversalToCallFire or (stateForFiveMinuteFire == 0 and isFirstEntryGateBoundaryFire) or crossThroughCleanCallFire);
+    (fullReversalToCallFire or (statePrev == 0 and isFirstEntryGateBoundaryFire) or crossThroughCleanCallFire);
 def sameBarCleanPutFire = isFiveMinuteClose and fiveBelow and fivePutWithinDistance and
-    (fullReversalToPutFire or (stateForFiveMinuteFire == 0 and isFirstEntryGateBoundaryFire) or crossThroughCleanPutFire);
+    (fullReversalToPutFire or (statePrev == 0 and isFirstEntryGateBoundaryFire) or crossThroughCleanPutFire);
 def cleanCallFire = entriesAllowed and oneAbove and callWithinDistance and (armPrev == 1 or sameBarCleanCallFire);
 def cleanPutFire = entriesAllowed and oneBelow and putWithinDistance and (armPrev == 2 or sameBarCleanPutFire);
 def pullbackCallFire = entriesAllowed and statePrev == 1 and oneAbove and callWithinDistance;

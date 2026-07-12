@@ -86,6 +86,26 @@ def pnull = if period <= AggregationPeriod.FIVE_MIN then 0725
     else if period == AggregationPeriod.FIFTEEN_MIN then 0715
     else 0700;
 
+# Timezone-safe session anchors: RegularTradingStart/End return the exchange's actual RTH
+# open/close as absolute epoch milliseconds, independent of the platform's displayed time
+# zone (Eastern, Central, etc). The core PMZ gating below (LIS/otime reset, premarket window,
+# 09:35 entry gate, RTH open) is anchored to these instead of comparing bare HHmm literals
+# against the platform clock face - that comparison silently misaligns by the zone offset
+# whenever the platform isn't set to Eastern. ALL-mode overnight premarket (nperiod1/nt2/nt3)
+# and the optional AfterHours plot (fut_time/ahh/ahl) are lower-priority/non-default paths and
+# still use the platform-clock-relative literals below - a known follow-up if ALL mode or the
+# futures after-hours overlay is ever made timezone-safe too.
+def rthStartEpoch = RegularTradingStart(GetYYYYMMDD());
+def rthEndEpoch = RegularTradingEnd(GetYYYYMMDD());
+def nowEpoch = GetTime();
+def minuteMs = 60 * 1000;
+def midnightEtEpoch = rthStartEpoch - (9 * 60 + 30) * minuteMs;
+def entryGateMinutesSinceMidnight = Floor(EntryGateTimeET / 100) * 60 + EntryGateTimeET % 100;
+def entryGateEpoch = rthStartEpoch + (entryGateMinutesSinceMidnight - (9 * 60 + 30)) * minuteMs;
+def premarketStartEpoch = rthStartEpoch - 125 * minuteMs;
+def premarketResetEpoch = rthEndEpoch - 5 * minuteMs;
+def lisResetEpoch = rthEndEpoch;
+
 plot color = Double.NaN;
 color.Hide();
 color.DefineColor("pbull", Color.CYAN);
@@ -94,8 +114,8 @@ color.DefineColor("fbull", Color.GREEN);
 color.DefineColor("fbear", Color.YELLOW);
 color.DefineColor("original_gray", Color.GRAY);
 
-def LIS = If(SecondsTillTime(tclose) == 0, price, LIS[1]);
-def otime = If(SecondsTillTime(topen) == 0, o, otime[1]);
+def LIS = If(nowEpoch >= lisResetEpoch and nowEpoch[1] < lisResetEpoch, price, LIS[1]);
+def otime = If(nowEpoch >= rthStartEpoch and nowEpoch[1] < rthStartEpoch, o, otime[1]);
 def gapAmount = if !IsNaN(otime) and !IsNaN(LIS) then otime - LIS else Double.NaN;
 def nperiod;
 def nperiod1 = SecondsFromTime(nt2) <= 0 and SecondsFromTime(cnull) > 0;
@@ -106,25 +126,27 @@ switch (Premarket) {
 case "ALL":
     nperiod = nperiod1 or nperiod2;
 case "PRE":
-    nperiod = SecondsFromTime(pnull) > 0 and SecondsFromTime(nt4) < 0;
+    nperiod = nowEpoch > premarketStartEpoch and nowEpoch < rthStartEpoch;
 }
 
-def pmh = if SecondsTillTime(cnull) == 0 then 0
+def pmzReset = nowEpoch >= premarketResetEpoch and nowEpoch[1] < premarketResetEpoch;
+
+def pmh = if pmzReset then 0
    else if nperiod then
        if pmh[1] > h then pmh[1] else h
    else pmh[1];
 
-def pmhTimeSec = if SecondsTillTime(cnull) == 0 then Double.NaN
+def pmhTimeSec = if pmzReset then Double.NaN
     else if nperiod then
         if pmh[1] > h then pmhTimeSec[1] else SecondsFromTime(0)
     else pmhTimeSec[1];
 
-def pml = if SecondsTillTime(cnull) == 0 then 100000
+def pml = if pmzReset then 100000
     else if nperiod then
         if pml[1] < l then pml[1] else l
     else pml[1];
 
-def pmlTimeSec = if SecondsTillTime(cnull) == 0 then Double.NaN
+def pmlTimeSec = if pmzReset then Double.NaN
     else if nperiod and l > 0 then
         if pml[1] < l then pmlTimeSec[1] else SecondsFromTime(0)
     else pmlTimeSec[1];
@@ -133,28 +155,32 @@ def gap = if nperiod then
     if o < LIS then 0 else 1
     else gap[1];
 
-def pmzHighOriginal = if SecondsFromTime(pnull) > 0 and SecondsFromTime(cnull) < 0 then
+def inPremarketWindow = nowEpoch > premarketStartEpoch and nowEpoch < premarketResetEpoch;
+
+def pmzHighOriginal = if inPremarketWindow then
     if gap then
         pmh - ((pmh - pml) * .2)
     else
         pml + ((pmh - pml) * .4)
 else Double.NaN;
 
-def pmzLowOriginal = if SecondsFromTime(pnull) > 0 and SecondsFromTime(cnull) < 0 then
+def pmzLowOriginal = if inPremarketWindow then
     if gap then
         pmh - ((pmh - pml) * .4)
     else
         pml + ((pmh - pml) * .2)
 else Double.NaN;
 
-def upper = if SecondsFromTime(0930) >= 0 and SecondsFromTime(cnull) < 0 then
+def inRthBeforeReset = nowEpoch >= rthStartEpoch and nowEpoch < premarketResetEpoch;
+
+def upper = if inRthBeforeReset then
     if gap then
         pmh - ((pmh - pml) * .2)
     else
       pml + ((pmh - pml) * .2)
     else Double.NaN;
 
-def lower = if SecondsFromTime(0930) >= 0 and SecondsFromTime(cnull) < 0 then
+def lower = if inRthBeforeReset then
     if gap then
         pmh - ((pmh - pml) * .4) else pml + ((pmh - pml) * .4)
     else Double.NaN;
@@ -179,7 +205,7 @@ def pmzLow = if AdjustPMZ then adjusted_lower else pmzLowOriginal;
 def pmzHighDisplay = pmzHigh;
 def pmzLowDisplay = pmzLow;
 
-def inRthSession = SecondsFromTime(0930) >= 0 and SecondsFromTime(cnull) < 0;
+def inRthSession = inRthBeforeReset;
 def pmzBandActive = (ShowPMZBand or ShowDistanceChartStyle) and inRthSession;
 def distanceGateActive = ShowDistanceChartStyle and inRthSession;
 def bandLocked = pmzBandActive and !IsNaN(pmzHigh) and !IsNaN(pmzLow);
@@ -286,9 +312,13 @@ script PmzEntryMachine {
     def fivePutDistanceOk = fivePutWithinDistance != 0;
     def fullReversalEnabled = enableFullReversalFreshBreakout != 0;
 
-    def statePrev = Floor(prevCode % 10);
-    def armPrev = Floor(Floor(prevCode / 10) % 10);
-    def budgetPrev = Floor(prevCode / 100);
+    # Self-heal against a poisoned recursive chain: CompoundValue's seed only rescues bar 0
+    # of the whole loaded history. If prevCode ever evaluates to NaN on a LATER bar (data
+    # gap, weekend/holiday transition), every subsequent bar would otherwise inherit NaN
+    # forever via smState[1] with no way to recover - reset to a clean 0/0/0 instead.
+    def statePrev = if IsNaN(prevCode) then 0 else Floor(prevCode % 10);
+    def armPrev = if IsNaN(prevCode) then 0 else Floor(Floor(prevCode / 10) % 10);
+    def budgetPrev = if IsNaN(prevCode) then 0 else Floor(prevCode / 100);
 
     # Full-reversal / cross-through arming must key off the RAW previous state (matching
     # PmzEntryStateMachine.IsFullReversal, which reads previousState before any transition).
@@ -358,16 +388,21 @@ script PmzEntryMachine {
 # Entry state machine.
 # State codes: 0 InPMZ_NoPullback, 1 InPMZ_CallPullback, 2 InPMZ_PutPullback,
 # 3 OutsidePmz(Call), 4 OutsidePmz(Put). Clean-arm codes: 0 none, 1 Call, 2 Put.
-def secFromOpen = SecondsFromTime(0930);
+def secFromOpen = Floor((nowEpoch - rthStartEpoch) / 1000);
 def fiveSlot = if secFromOpen >= 0 then Floor(secFromOpen / 300) else -1;
 def isFiveMinuteClose = GetAggregationPeriod() <= AggregationPeriod.MIN and fiveSlot >= 1 and fiveSlot != fiveSlot[1];
-def isRthOpen = SecondsTillTime(0930) == 0;
-def entriesAllowed = SecondsFromTime(EntryGateTimeET) >= 0 and SecondsFromTime(cnull) < 0;
+def isRthOpen = nowEpoch >= rthStartEpoch and nowEpoch[1] < rthStartEpoch;
+def entriesAllowed = nowEpoch >= entryGateEpoch and nowEpoch < premarketResetEpoch;
 
-def oneClose = close(period = AggregationPeriod.MIN);
-def fiveClose = close(period = AggregationPeriod.FIVE_MIN);
-def fiveHigh = high(period = AggregationPeriod.FIVE_MIN);
-def fiveLow = low(period = AggregationPeriod.FIVE_MIN);
+# Defensive floor to the chart's own primary period (same pattern as `period` above at
+# line ~60). A hard-coded AggregationPeriod.MIN/FIVE_MIN request throws "Secondary period
+# cannot be less than primary" if this study is ever applied to a chart coarser than that -
+# flooring here lets the chartIsOneMinute warning banner below actually render instead.
+def onePeriod = if GetAggregationPeriod() <= AggregationPeriod.MIN then AggregationPeriod.MIN else GetAggregationPeriod();
+def oneClose = close(period = onePeriod);
+def fiveClose = close(period = period);
+def fiveHigh = high(period = period);
+def fiveLow = low(period = period);
 def oneAbove = !IsNaN(pmzHigh) and oneClose > pmzHigh;
 def oneBelow = !IsNaN(pmzLow) and oneClose < pmzLow;
 def fiveAbove = !IsNaN(pmzHigh) and fiveClose > pmzHigh;
@@ -425,8 +460,10 @@ def cleanArm = Floor(Floor(smState / 10) % 10);
 def triggerBudget = Floor(smState / 100);
 
 # Entry fires are computed at study scope so markers use native booleans, not script yes/no inputs.
-def statePrev = Floor(smState[1] % 10);
-def armPrev = Floor(Floor(smState[1] / 10) % 10);
+# Same self-heal as inside PmzEntryMachine above - a NaN smState[1] must not poison the
+# fire computation below forever.
+def statePrev = if IsNaN(smState[1]) then 0 else Floor(smState[1] % 10);
+def armPrev = if IsNaN(smState[1]) then 0 else Floor(Floor(smState[1] / 10) % 10);
 def fullReversalToCallFire = EnableFullReversalFreshBreakout and statePrev == 4 and fiveAbove;
 def fullReversalToPutFire = EnableFullReversalFreshBreakout and statePrev == 3 and fiveBelow;
 def isFirstEntryGateBoundaryFire = isFiveMinuteClose and fiveSlot == 1;
@@ -444,6 +481,20 @@ def callFire = cleanCallFire or pullbackCallFire;
 def putFire = cleanPutFire or pullbackPutFire;
 def pullbackFire = pullbackCallFire or pullbackPutFire;
 
+# Hidden diagnostic plots: AddLabel only ever shows the latest bar's value, so hovering a
+# historical bar's crosshair/Data Window is the only way to inspect state on past sessions.
+# These are Hide()-d from the chart itself but remain visible in the Data Window on any bar.
+# State codes: 0 InPMZ_NoPullback, 1 InPMZ_CallPullback, 2 InPMZ_PutPullback,
+# 3 OutsidePmz(Call), 4 OutsidePmz(Put). CleanArm: 0 none, 1 Call, 2 Put.
+plot DebugState = state;
+plot DebugCleanArm = cleanArm;
+plot DebugBudget = triggerBudget;
+plot DebugGateOpen = if entriesAllowed then 1 else 0;
+plot DebugOneAbove = if oneAbove then 1 else 0;
+plot DebugOneBelow = if oneBelow then 1 else 0;
+plot DebugCallDist = callDistance;
+plot DebugPutDist = putDistance;
+
 # Entry markers: green/red triangles at the 1-minute close (same placement as /distance chart).
 plot CallEntryMarker = if ShowEntryMarkers and callFire then oneClose else Double.NaN;
 CallEntryMarker.SetPaintingStrategy(PaintingStrategy.ARROW_UP);
@@ -457,7 +508,9 @@ PutEntryMarker.SetLineWeight(5);
 PutEntryMarker.SetDefaultColor(CreateColor(234, 67, 53));
 PutEntryMarker.HideBubble();
 
-def entryTimeSec = SecondsFromTime(0);
+# ET-relative (not platform-clock-relative) so the "HH:MM ET" bubble text stays accurate
+# regardless of the platform's displayed time zone.
+def entryTimeSec = Floor((nowEpoch - midnightEtEpoch) / 1000);
 AddChartBubble(
     ShowEntryMarkers and callFire,
     oneClose,

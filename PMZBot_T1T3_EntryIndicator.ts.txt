@@ -1,7 +1,6 @@
 ##
-# PMZBot T1+T2+T3 Entry Indicator — Day only (canonical name)
-# Same content as PMZBot_T1T3_EntryIndicator_Day.ts.txt
-# Purpose: TOS continuous /ES PMZ day entry validation for T1+T2+T3 (cash session).
+# PMZBot T1+T2+T3 Entry Indicator for ThinkOrSwim
+# Purpose: TOS continuous /ES PMZ entry validation for T1+T2+T3.
 # Scope: entries only. No exits, slot occupancy, cooldown/de-dupe, active-trade caps, or consolidation pause.
 # Consolidation pause is permanently out of scope. v2-only exclusions: edge-proximity blocking,
 # far-distance 3-minute deferral, and manual PMZ override inputs.

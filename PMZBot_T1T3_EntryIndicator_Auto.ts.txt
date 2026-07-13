@@ -6,6 +6,7 @@
 #   Equity (e.g. SPY, AAPL): day cash entries only.
 # No NightMode / Premarket / futures inputs. Clamp min/max still user-adjustable.
 # Scope: entries only. No exits, slot occupancy, cooldown/de-dupe, active-trade caps, or consolidation pause.
+# 2026-07-13: Type A from-neutral, Type C same-bar one-shot, same-side took latch (T1–T3; not T5).
 # Import: TOS Studies -> Edit Studies -> Create -> paste; 1-minute chart with extended hours.
 # TOS continuous /ES and the TOS LIS definition below are the canonical chart reference.
 # Lines must overlay the price axis. If PMZ/gate lines do not align with the ES scale, edit the
@@ -447,37 +448,40 @@ script PmzEntryMachine {
     input fiveAbove = 0;
     input fiveBelow = 0;
     input fiveInside = 0;
+    input fiveOverlapsPmz = 0;
     input callWithinDistance = 0;
     input putWithinDistance = 0;
     input fiveCallWithinDistance = 0;
     input fivePutWithinDistance = 0;
     input maxTriggerCandles = 5;
     input enableFullReversalFreshBreakout = 1;
+    input isLastMinuteOfFive = 0;
 
     def sessionOpen = isSessionOpen != 0;
     def fiveCloseBar = isFiveMinuteClose != 0;
+    def lastMinuteOfFive = isLastMinuteOfFive != 0;
     def entriesOk = entriesAllowed != 0;
     def oneAboveBar = oneAbove != 0;
     def oneBelowBar = oneBelow != 0;
     def fiveAboveBar = fiveAbove != 0;
     def fiveBelowBar = fiveBelow != 0;
     def fiveInsideBar = fiveInside != 0;
+    def fiveOverlapsBand = fiveOverlapsPmz != 0;
     def callDistanceOk = callWithinDistance != 0;
     def putDistanceOk = putWithinDistance != 0;
     def fiveCallDistanceOk = fiveCallWithinDistance != 0;
     def fivePutDistanceOk = fivePutWithinDistance != 0;
     def fullReversalEnabled = enableFullReversalFreshBreakout != 0;
 
-    # Self-heal against a poisoned recursive chain: CompoundValue's seed only rescues bar 0
-    # of the whole loaded history. If prevCode ever evaluates to NaN on a LATER bar (data
-    # gap, weekend/holiday transition), every subsequent bar would otherwise inherit NaN
-    # forever via smState[1] with no way to recover - reset to a clean 0/0/0 instead.
+    # Packed: state + 10*budget + 100*neutral + 1000*tookCall + 10000*tookPut
+    # neutral = _lastFiveMinClosedInsidePmz; took* = hasHadAcceptedEntry* until next neutral.
+    # T5 out of scope. Markers = PMZ SM fires (T1–T3 fan-out; T4 same signal).
     def statePrev = if IsNaN(prevCode) then 0 else Floor(prevCode % 10);
-    def armPrev = if IsNaN(prevCode) then 0 else Floor(Floor(prevCode / 10) % 10);
-    def budgetPrev = if IsNaN(prevCode) then 0 else Floor(prevCode / 100);
+    def budgetPrev = if IsNaN(prevCode) then 0 else Floor(Floor(prevCode / 10) % 10);
+    def neutralPrev = if IsNaN(prevCode) then 0 else Floor(Floor(prevCode / 100) % 10);
+    def tookCallPrev = if IsNaN(prevCode) then 0 else Floor(Floor(prevCode / 1000) % 10);
+    def tookPutPrev = if IsNaN(prevCode) then 0 else Floor(prevCode / 10000);
 
-    # Full-reversal / cross-through arming must key off the RAW previous state (matching
-    # PmzEntryStateMachine.IsFullReversal, which reads previousState before any transition).
     def fullReversalToCall = fullReversalEnabled and statePrev == 4 and fiveAboveBar;
     def fullReversalToPut = fullReversalEnabled and statePrev == 3 and fiveBelowBar;
     def isFirstEntryGateBoundary = fiveCloseBar and isFirstFiveSlot != 0;
@@ -488,28 +492,40 @@ script PmzEntryMachine {
     def sameBarCleanPut = fiveCloseBar and fiveBelowBar and fivePutDistanceOk and
         (fullReversalToPut or (statePrev == 0 and isFirstEntryGateBoundary) or crossThroughCleanPut);
 
-    def cleanCallFire = entriesOk and oneAboveBar and callDistanceOk and (armPrev == 1 or sameBarCleanCall);
-    def cleanPutFire = entriesOk and oneBelowBar and putDistanceOk and (armPrev == 2 or sameBarCleanPut);
-    def pullbackCallFire = entriesOk and statePrev == 1 and oneAboveBar and callDistanceOk;
-    def pullbackPutFire = entriesOk and statePrev == 2 and oneBelowBar and putDistanceOk;
+    # Type A: 1-min outside after neutral. Not on 5-min boundary bar; not on last 1-min of a
+    # 5-min slot (bot processes that close with the five handler first — neutral may clear).
+    # Same-side blocked until next neutral (took*).
+    def typeAFromNeutralCall = neutralPrev == 1 and !fiveCloseBar and !lastMinuteOfFive and
+        oneAboveBar and callDistanceOk and tookCallPrev == 0;
+    def typeAFromNeutralPut = neutralPrev == 1 and !fiveCloseBar and !lastMinuteOfFive and
+        oneBelowBar and putDistanceOk and tookPutPrev == 0;
 
-    def cleanArmConsumed = cleanCallFire or cleanPutFire or
-        (armPrev == 1 and (oneBelowBar or (entriesOk and oneAboveBar and !callDistanceOk))) or
-        (armPrev == 2 and (oneAboveBar or (entriesOk and oneBelowBar and !putDistanceOk)));
+    # Type C: 5-min outside from Inside/neutral/full-rev, with *both* five and 1-min still
+    # outside within distance on the five-boundary bar (bot next-1-min after five complete).
+    # Require five-distance OK so we don't mark blocked far breakouts (e.g. 10:25).
+    def insideFamily = statePrev == 0 or statePrev == 1 or statePrev == 2;
+    def typeCCallFire = fiveCloseBar and fiveAboveBar and oneAboveBar and callDistanceOk and
+        fiveCallDistanceOk and (insideFamily or fullReversalToCall or neutralPrev == 1);
+    def typeCPutFire = fiveCloseBar and fiveBelowBar and oneBelowBar and putDistanceOk and
+        fivePutDistanceOk and (insideFamily or fullReversalToPut or neutralPrev == 1);
+
+    def cleanCallFire = entriesOk and oneAboveBar and callDistanceOk and
+        (sameBarCleanCall or typeAFromNeutralCall or typeCCallFire);
+    def cleanPutFire = entriesOk and oneBelowBar and putDistanceOk and
+        (sameBarCleanPut or typeAFromNeutralPut or typeCPutFire);
+    # Pullback re-break: also respect same-side took latch.
+    def pullbackCallFire = entriesOk and statePrev == 1 and oneAboveBar and callDistanceOk and tookCallPrev == 0;
+    def pullbackPutFire = entriesOk and statePrev == 2 and oneBelowBar and putDistanceOk and tookPutPrev == 0;
 
     def pullbackMiss = (statePrev == 1 or statePrev == 2) and !pullbackCallFire and !pullbackPutFire;
     def budgetAfterOneMinute = if pullbackMiss and !fiveCloseBar then budgetPrev - 1 else budgetPrev;
     def pullbackTimedOut = pullbackMiss and !fiveCloseBar and budgetAfterOneMinute <= 0;
-    def armsCleanCall = (sessionOpen and oneAboveBar) or
-        (fiveCloseBar and fiveAboveBar and (statePrev == 0 or fullReversalToCall));
-    def armsCleanPut = (sessionOpen and oneBelowBar) or
-        (fiveCloseBar and fiveBelowBar and (statePrev == 0 or fullReversalToPut));
 
+    # Five-minute (and session-open) own the position state — matching bot five-state.
+    # Do NOT move to Outside on 1-min Type A/C fires (that poisoned later 5-min transitions).
     def nextState =
         if sessionOpen then
             if oneAboveBar then 3 else if oneBelowBar then 4 else 0
-        else if pullbackCallFire or cleanCallFire then 3
-        else if pullbackPutFire or cleanPutFire then 4
         else if pullbackTimedOut then 0
         else if fiveCloseBar then
             if fiveInsideBar then
@@ -521,13 +537,6 @@ script PmzEntryMachine {
             else statePrev
         else statePrev;
 
-    def nextArm =
-        if cleanCallFire or cleanPutFire then 0
-        else if armsCleanCall then 1
-        else if armsCleanPut then 2
-        else if cleanArmConsumed then 0
-        else armPrev;
-
     def nextBudget =
         if sessionOpen then 0
         else if pullbackCallFire or pullbackPutFire or cleanCallFire or cleanPutFire then 0
@@ -537,7 +546,26 @@ script PmzEntryMachine {
         else if pullbackMiss and !fiveCloseBar then budgetAfterOneMinute
         else budgetPrev;
 
-    plot newCode = nextState + nextArm * 10 + nextBudget * 100;
+    def nextNeutral =
+        if sessionOpen then 1
+        else if fiveCloseBar and fiveInsideBar then 1
+        else if fiveCloseBar and (fiveAboveBar or fiveBelowBar) then 0
+        else neutralPrev;
+
+    def nextTookCall =
+        if sessionOpen then 0
+        else if fiveCloseBar and fiveInsideBar then 0
+        else if cleanCallFire or pullbackCallFire then 1
+        else tookCallPrev;
+    def nextTookPut =
+        if sessionOpen then 0
+        else if fiveCloseBar and fiveInsideBar then 0
+        else if cleanPutFire or pullbackPutFire then 1
+        else tookPutPrev;
+
+    plot newCode = nextState + nextBudget * 10 + nextNeutral * 100 +
+        nextTookCall * 1000 + nextTookPut * 10000;
+}
 }
 
 # Extension path: wait until form is frozen before night entries.
@@ -553,6 +581,8 @@ def daySecFromOpen = if !IsNaN(rthStartEpoch) then Floor((nowEpoch - rthStartEpo
 def dayFiveSlot = if daySecFromOpen >= 0 then Floor(daySecFromOpen / 300) else -1;
 def dayFiveMinClose = GetAggregationPeriod() <= AggregationPeriod.MIN and dayFiveSlot >= 1 and dayFiveSlot != dayFiveSlot[1];
 def dayFirstFiveSlot = dayFiveSlot == 1 or (dayFiveSlot >= 1 and dayFiveSlot[1] < 1);
+def dayIsLastMinuteOfFive = GetAggregationPeriod() <= AggregationPeriod.MIN and daySecFromOpen >= 0 and
+    Floor(daySecFromOpen / 300) != Floor((daySecFromOpen + 60) / 300);
 def dayEntriesAllowed = !IsNaN(dayEntryGateEpoch) and !IsNaN(premarketResetEpoch) and
     nowEpoch >= dayEntryGateEpoch and nowEpoch < premarketResetEpoch;
 
@@ -565,6 +595,8 @@ def nightFiveSlot = if nightSecFromOpen >= 0 then Floor(nightSecFromOpen / 300) 
 def nightFiveMinClose = GetAggregationPeriod() <= AggregationPeriod.MIN and nightFiveSlot >= 1 and
     nightFiveSlot != nightFiveSlot[1] and !inExtensionForm;
 def nightFirstFiveSlot = nightFiveSlot == 1 or (nightFiveSlot >= 1 and nightFiveSlot[1] < 1);
+def nightIsLastMinuteOfFive = GetAggregationPeriod() <= AggregationPeriod.MIN and nightSecFromOpen >= 0 and
+    Floor(nightSecFromOpen / 300) != Floor((nightSecFromOpen + 60) / 300);
 def nightSessionOpen = isFuturesProfile and !IsNaN(nightSessionOpenEpoch) and
     nowEpoch >= nightSessionOpenEpoch and (IsNaN(nowEpoch[1]) or nowEpoch[1] < nightSessionOpenEpoch);
 def nightEntriesAllowed = isFuturesProfile and nightFormFrozen and !IsNaN(nightEntryStartEpoch) and
@@ -615,12 +647,14 @@ def daySmState = CompoundValue(1,
         if dayFiveAbove then 1 else 0,
         if dayFiveBelow then 1 else 0,
         if dayFiveInside then 1 else 0,
+        0,
         if dayCallOk then 1 else 0,
         if dayPutOk then 1 else 0,
         if dayFiveCallOk then 1 else 0,
         if dayFivePutOk then 1 else 0,
         MaxTriggerCandles,
-        enableFullReversalFlag).newCode,
+        enableFullReversalFlag,
+        if dayIsLastMinuteOfFive then 1 else 0).newCode,
     0);
 
 def nightSmState = CompoundValue(1,
@@ -636,17 +670,22 @@ def nightSmState = CompoundValue(1,
             if nightFiveAbove then 1 else 0,
             if nightFiveBelow then 1 else 0,
             if nightFiveInside then 1 else 0,
+            0,
             if nightCallOk then 1 else 0,
             if nightPutOk then 1 else 0,
             if nightFiveCallOk then 1 else 0,
             if nightFivePutOk then 1 else 0,
             MaxTriggerCandles,
-            enableFullReversalFlag).newCode
+            enableFullReversalFlag,
+            if nightIsLastMinuteOfFive then 1 else 0).newCode
     else 0,
     0);
 
+
 def dayStatePrev = if IsNaN(daySmState[1]) then 0 else Floor(daySmState[1] % 10);
-def dayArmPrev = if IsNaN(daySmState[1]) then 0 else Floor(Floor(daySmState[1] / 10) % 10);
+def dayNeutralPrev = if IsNaN(daySmState[1]) then 0 else Floor(Floor(daySmState[1] / 100) % 10);
+def dayTookCallPrev = if IsNaN(daySmState[1]) then 0 else Floor(Floor(daySmState[1] / 1000) % 10);
+def dayTookPutPrev = if IsNaN(daySmState[1]) then 0 else Floor(daySmState[1] / 10000);
 def dayFRCall = EnableFullReversalFreshBreakout and dayStatePrev == 4 and dayFiveAbove;
 def dayFRPut = EnableFullReversalFreshBreakout and dayStatePrev == 3 and dayFiveBelow;
 def dayFirstGate = dayFiveMinClose and dayFirstFiveSlot;
@@ -656,15 +695,24 @@ def daySameCall = dayFiveMinClose and dayFiveAbove and dayFiveCallOk and
     (dayFRCall or (dayStatePrev == 0 and dayFirstGate) or dayCrossCall);
 def daySamePut = dayFiveMinClose and dayFiveBelow and dayFivePutOk and
     (dayFRPut or (dayStatePrev == 0 and dayFirstGate) or dayCrossPut);
-def dayCleanCall = dayEntriesAllowed and dayOneAbove and dayCallOk and (dayArmPrev == 1 or daySameCall);
-def dayCleanPut = dayEntriesAllowed and dayOneBelow and dayPutOk and (dayArmPrev == 2 or daySamePut);
-def dayPullCall = dayEntriesAllowed and dayStatePrev == 1 and dayOneAbove and dayCallOk;
-def dayPullPut = dayEntriesAllowed and dayStatePrev == 2 and dayOneBelow and dayPutOk;
+def dayTypeACall = dayNeutralPrev == 1 and !dayFiveMinClose and !dayIsLastMinuteOfFive and dayOneAbove and dayCallOk and dayTookCallPrev == 0;
+def dayTypeAPut = dayNeutralPrev == 1 and !dayFiveMinClose and !dayIsLastMinuteOfFive and dayOneBelow and dayPutOk and dayTookPutPrev == 0;
+def dayInside = dayStatePrev == 0 or dayStatePrev == 1 or dayStatePrev == 2;
+def dayTypeCCall = dayFiveMinClose and dayFiveAbove and dayOneAbove and dayCallOk and dayFiveCallOk and
+    (dayInside or dayFRCall or dayNeutralPrev == 1);
+def dayTypeCPut = dayFiveMinClose and dayFiveBelow and dayOneBelow and dayPutOk and dayFivePutOk and
+    (dayInside or dayFRPut or dayNeutralPrev == 1);
+def dayCleanCall = dayEntriesAllowed and dayOneAbove and dayCallOk and (daySameCall or dayTypeACall or dayTypeCCall);
+def dayCleanPut = dayEntriesAllowed and dayOneBelow and dayPutOk and (daySamePut or dayTypeAPut or dayTypeCPut);
+def dayPullCall = dayEntriesAllowed and dayStatePrev == 1 and dayOneAbove and dayCallOk and dayTookCallPrev == 0;
+def dayPullPut = dayEntriesAllowed and dayStatePrev == 2 and dayOneBelow and dayPutOk and dayTookPutPrev == 0;
 def dayCallFire = dayCleanCall or dayPullCall;
 def dayPutFire = dayCleanPut or dayPullPut;
 
 def nightStatePrev = if IsNaN(nightSmState[1]) then 0 else Floor(nightSmState[1] % 10);
-def nightArmPrev = if IsNaN(nightSmState[1]) then 0 else Floor(Floor(nightSmState[1] / 10) % 10);
+def nightNeutralPrev = if IsNaN(nightSmState[1]) then 0 else Floor(Floor(nightSmState[1] / 100) % 10);
+def nightTookCallPrev = if IsNaN(nightSmState[1]) then 0 else Floor(Floor(nightSmState[1] / 1000) % 10);
+def nightTookPutPrev = if IsNaN(nightSmState[1]) then 0 else Floor(nightSmState[1] / 10000);
 def nightFRCall = EnableFullReversalFreshBreakout and nightStatePrev == 4 and nightFiveAbove;
 def nightFRPut = EnableFullReversalFreshBreakout and nightStatePrev == 3 and nightFiveBelow;
 def nightFirstGate = nightFiveMinClose and nightFirstFiveSlot;
@@ -674,10 +722,17 @@ def nightSameCall = nightFiveMinClose and nightFiveAbove and nightFiveCallOk and
     (nightFRCall or (nightStatePrev == 0 and nightFirstGate) or nightCrossCall);
 def nightSamePut = nightFiveMinClose and nightFiveBelow and nightFivePutOk and
     (nightFRPut or (nightStatePrev == 0 and nightFirstGate) or nightCrossPut);
-def nightCleanCall = nightEntriesAllowed and nightOneAbove and nightCallOk and (nightArmPrev == 1 or nightSameCall);
-def nightCleanPut = nightEntriesAllowed and nightOneBelow and nightPutOk and (nightArmPrev == 2 or nightSamePut);
-def nightPullCall = nightEntriesAllowed and nightStatePrev == 1 and nightOneAbove and nightCallOk;
-def nightPullPut = nightEntriesAllowed and nightStatePrev == 2 and nightOneBelow and nightPutOk;
+def nightTypeACall = nightNeutralPrev == 1 and !nightFiveMinClose and !nightIsLastMinuteOfFive and nightOneAbove and nightCallOk and nightTookCallPrev == 0;
+def nightTypeAPut = nightNeutralPrev == 1 and !nightFiveMinClose and !nightIsLastMinuteOfFive and nightOneBelow and nightPutOk and nightTookPutPrev == 0;
+def nightInside = nightStatePrev == 0 or nightStatePrev == 1 or nightStatePrev == 2;
+def nightTypeCCall = nightFiveMinClose and nightFiveAbove and nightOneAbove and nightCallOk and nightFiveCallOk and
+    (nightInside or nightFRCall or nightNeutralPrev == 1);
+def nightTypeCPut = nightFiveMinClose and nightFiveBelow and nightOneBelow and nightPutOk and nightFivePutOk and
+    (nightInside or nightFRPut or nightNeutralPrev == 1);
+def nightCleanCall = nightEntriesAllowed and nightOneAbove and nightCallOk and (nightSameCall or nightTypeACall or nightTypeCCall);
+def nightCleanPut = nightEntriesAllowed and nightOneBelow and nightPutOk and (nightSamePut or nightTypeAPut or nightTypeCPut);
+def nightPullCall = nightEntriesAllowed and nightStatePrev == 1 and nightOneAbove and nightCallOk and nightTookCallPrev == 0;
+def nightPullPut = nightEntriesAllowed and nightStatePrev == 2 and nightOneBelow and nightPutOk and nightTookPutPrev == 0;
 def nightCallFire = nightCleanCall or nightPullCall;
 def nightPutFire = nightCleanPut or nightPullPut;
 
@@ -685,8 +740,11 @@ def callFire = dayCallFire or nightCallFire;
 def putFire = dayPutFire or nightPutFire;
 def entriesAllowed = dayEntriesAllowed or nightEntriesAllowed;
 def state = if showNightBand then Floor(nightSmState % 10) else Floor(daySmState % 10);
-def cleanArm = if showNightBand then Floor(Floor(nightSmState / 10) % 10) else Floor(Floor(daySmState / 10) % 10);
-def triggerBudget = if showNightBand then Floor(nightSmState / 100) else Floor(daySmState / 100);
+def cleanArm = 0;
+def triggerBudget = if showNightBand then Floor(Floor(nightSmState / 10) % 10) else Floor(Floor(daySmState / 10) % 10);
+def neutralGate = if showNightBand then Floor(Floor(nightSmState / 100) % 10) else Floor(Floor(daySmState / 100) % 10);
+def tookCall = if showNightBand then Floor(Floor(nightSmState / 1000) % 10) else Floor(Floor(daySmState / 1000) % 10);
+def tookPut = if showNightBand then Floor(nightSmState / 10000) else Floor(daySmState / 10000);
 def oneAbove = if showNightBand then nightOneAbove else dayOneAbove;
 def oneBelow = if showNightBand then nightOneBelow else dayOneBelow;
 def callDistance = if showNightBand then nightCallDist else dayCallDist;
@@ -699,6 +757,9 @@ def fiveSlot = if showNightBand then nightFiveSlot else dayFiveSlot;
 plot DebugState = state;
 plot DebugCleanArm = cleanArm;
 plot DebugBudget = triggerBudget;
+plot DebugNeutralGate = neutralGate;
+plot DebugTookCall = tookCall;
+plot DebugTookPut = tookPut;
 plot DebugGateOpen = if entriesAllowed then 1 else 0;
 plot DebugOneAbove = if oneAbove then 1 else 0;
 plot DebugOneBelow = if oneBelow then 1 else 0;
@@ -717,6 +778,9 @@ plot DebugReopenKind = if isWeekdayReopen then 1 else if isWeekendReopen then 2 
 DebugState.Hide();
 DebugCleanArm.Hide();
 DebugBudget.Hide();
+DebugNeutralGate.Hide();
+DebugTookCall.Hide();
+DebugTookPut.Hide();
 DebugGateOpen.Hide();
 DebugOneAbove.Hide();
 DebugOneBelow.Hide();
@@ -809,6 +873,7 @@ AddLabel(
     (if cleanArm == 1 then "Call"
     else if cleanArm == 2 then "Put"
     else "None") +
+    (if neutralGate == 1 then " | N" else "") +
     " | Dist " +
     AsText(callDistance, NumberFormat.TWO_DECIMAL_PLACES) + "/" +
     AsText(putDistance, NumberFormat.TWO_DECIMAL_PLACES),
@@ -885,6 +950,8 @@ AddLabel(bannerActive,
     (if cleanArm == 1 then "Call"
     else if cleanArm == 2 then "Put"
     else "None") +
+    " | Neutral: " + (if neutralGate == 1 then "Yes" else "No") +
+    " | Took C/P: " + tookCall + "/" + tookPut +
     " | Budget: " + triggerBudget,
     Color.WHITE);
 

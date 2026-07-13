@@ -6,6 +6,7 @@
 # Consolidation pause is permanently out of scope. v2-only exclusions: edge-proximity blocking,
 # far-distance 3-minute deferral, and manual PMZ override inputs.
 # Parity target (day): EntryChartGenerator TestScenarios 01-12, 14-20, 22-23.
+# 2026-07-13: Type A from-neutral, Type C same-bar one-shot, same-side took latch (T1–T3; not T5).
 # Night PMZ band: Tr3ndy form/display math + Peakbot Sunday form extension; night entries use day SM methodology.
 # Import: TOS Studies -> Edit Studies -> Create -> paste; apply to a /ES 1-minute continuous chart with extended hours.
 # TOS continuous /ES and the TOS LIS definition below are the canonical chart reference.
@@ -465,37 +466,40 @@ script PmzEntryMachine {
     input fiveAbove = 0;
     input fiveBelow = 0;
     input fiveInside = 0;
+    input fiveOverlapsPmz = 0;
     input callWithinDistance = 0;
     input putWithinDistance = 0;
     input fiveCallWithinDistance = 0;
     input fivePutWithinDistance = 0;
     input maxTriggerCandles = 5;
     input enableFullReversalFreshBreakout = 1;
+    input isLastMinuteOfFive = 0;
 
     def sessionOpen = isSessionOpen != 0;
     def fiveCloseBar = isFiveMinuteClose != 0;
+    def lastMinuteOfFive = isLastMinuteOfFive != 0;
     def entriesOk = entriesAllowed != 0;
     def oneAboveBar = oneAbove != 0;
     def oneBelowBar = oneBelow != 0;
     def fiveAboveBar = fiveAbove != 0;
     def fiveBelowBar = fiveBelow != 0;
     def fiveInsideBar = fiveInside != 0;
+    def fiveOverlapsBand = fiveOverlapsPmz != 0;
     def callDistanceOk = callWithinDistance != 0;
     def putDistanceOk = putWithinDistance != 0;
     def fiveCallDistanceOk = fiveCallWithinDistance != 0;
     def fivePutDistanceOk = fivePutWithinDistance != 0;
     def fullReversalEnabled = enableFullReversalFreshBreakout != 0;
 
-    # Self-heal against a poisoned recursive chain: CompoundValue's seed only rescues bar 0
-    # of the whole loaded history. If prevCode ever evaluates to NaN on a LATER bar (data
-    # gap, weekend/holiday transition), every subsequent bar would otherwise inherit NaN
-    # forever via smState[1] with no way to recover - reset to a clean 0/0/0 instead.
+    # Packed: state + 10*budget + 100*neutral + 1000*tookCall + 10000*tookPut
+    # neutral = _lastFiveMinClosedInsidePmz; took* = hasHadAcceptedEntry* until next neutral.
+    # T5 out of scope. Markers = PMZ SM fires (T1–T3 fan-out; T4 same signal).
     def statePrev = if IsNaN(prevCode) then 0 else Floor(prevCode % 10);
-    def armPrev = if IsNaN(prevCode) then 0 else Floor(Floor(prevCode / 10) % 10);
-    def budgetPrev = if IsNaN(prevCode) then 0 else Floor(prevCode / 100);
+    def budgetPrev = if IsNaN(prevCode) then 0 else Floor(Floor(prevCode / 10) % 10);
+    def neutralPrev = if IsNaN(prevCode) then 0 else Floor(Floor(prevCode / 100) % 10);
+    def tookCallPrev = if IsNaN(prevCode) then 0 else Floor(Floor(prevCode / 1000) % 10);
+    def tookPutPrev = if IsNaN(prevCode) then 0 else Floor(prevCode / 10000);
 
-    # Full-reversal / cross-through arming must key off the RAW previous state (matching
-    # PmzEntryStateMachine.IsFullReversal, which reads previousState before any transition).
     def fullReversalToCall = fullReversalEnabled and statePrev == 4 and fiveAboveBar;
     def fullReversalToPut = fullReversalEnabled and statePrev == 3 and fiveBelowBar;
     def isFirstEntryGateBoundary = fiveCloseBar and isFirstFiveSlot != 0;
@@ -506,28 +510,40 @@ script PmzEntryMachine {
     def sameBarCleanPut = fiveCloseBar and fiveBelowBar and fivePutDistanceOk and
         (fullReversalToPut or (statePrev == 0 and isFirstEntryGateBoundary) or crossThroughCleanPut);
 
-    def cleanCallFire = entriesOk and oneAboveBar and callDistanceOk and (armPrev == 1 or sameBarCleanCall);
-    def cleanPutFire = entriesOk and oneBelowBar and putDistanceOk and (armPrev == 2 or sameBarCleanPut);
-    def pullbackCallFire = entriesOk and statePrev == 1 and oneAboveBar and callDistanceOk;
-    def pullbackPutFire = entriesOk and statePrev == 2 and oneBelowBar and putDistanceOk;
+    # Type A: 1-min outside after neutral. Not on 5-min boundary bar; not on last 1-min of a
+    # 5-min slot (bot processes that close with the five handler first — neutral may clear).
+    # Same-side blocked until next neutral (took*).
+    def typeAFromNeutralCall = neutralPrev == 1 and !fiveCloseBar and !lastMinuteOfFive and
+        oneAboveBar and callDistanceOk and tookCallPrev == 0;
+    def typeAFromNeutralPut = neutralPrev == 1 and !fiveCloseBar and !lastMinuteOfFive and
+        oneBelowBar and putDistanceOk and tookPutPrev == 0;
 
-    def cleanArmConsumed = cleanCallFire or cleanPutFire or
-        (armPrev == 1 and (oneBelowBar or (entriesOk and oneAboveBar and !callDistanceOk))) or
-        (armPrev == 2 and (oneAboveBar or (entriesOk and oneBelowBar and !putDistanceOk)));
+    # Type C: 5-min outside from Inside/neutral/full-rev, with *both* five and 1-min still
+    # outside within distance on the five-boundary bar (bot next-1-min after five complete).
+    # Require five-distance OK so we don't mark blocked far breakouts (e.g. 10:25).
+    def insideFamily = statePrev == 0 or statePrev == 1 or statePrev == 2;
+    def typeCCallFire = fiveCloseBar and fiveAboveBar and oneAboveBar and callDistanceOk and
+        fiveCallDistanceOk and (insideFamily or fullReversalToCall or neutralPrev == 1);
+    def typeCPutFire = fiveCloseBar and fiveBelowBar and oneBelowBar and putDistanceOk and
+        fivePutDistanceOk and (insideFamily or fullReversalToPut or neutralPrev == 1);
+
+    def cleanCallFire = entriesOk and oneAboveBar and callDistanceOk and
+        (sameBarCleanCall or typeAFromNeutralCall or typeCCallFire);
+    def cleanPutFire = entriesOk and oneBelowBar and putDistanceOk and
+        (sameBarCleanPut or typeAFromNeutralPut or typeCPutFire);
+    # Pullback re-break: also respect same-side took latch.
+    def pullbackCallFire = entriesOk and statePrev == 1 and oneAboveBar and callDistanceOk and tookCallPrev == 0;
+    def pullbackPutFire = entriesOk and statePrev == 2 and oneBelowBar and putDistanceOk and tookPutPrev == 0;
 
     def pullbackMiss = (statePrev == 1 or statePrev == 2) and !pullbackCallFire and !pullbackPutFire;
     def budgetAfterOneMinute = if pullbackMiss and !fiveCloseBar then budgetPrev - 1 else budgetPrev;
     def pullbackTimedOut = pullbackMiss and !fiveCloseBar and budgetAfterOneMinute <= 0;
-    def armsCleanCall = (sessionOpen and oneAboveBar) or
-        (fiveCloseBar and fiveAboveBar and (statePrev == 0 or fullReversalToCall));
-    def armsCleanPut = (sessionOpen and oneBelowBar) or
-        (fiveCloseBar and fiveBelowBar and (statePrev == 0 or fullReversalToPut));
 
+    # Five-minute (and session-open) own the position state — matching bot five-state.
+    # Do NOT move to Outside on 1-min Type A/C fires (that poisoned later 5-min transitions).
     def nextState =
         if sessionOpen then
             if oneAboveBar then 3 else if oneBelowBar then 4 else 0
-        else if pullbackCallFire or cleanCallFire then 3
-        else if pullbackPutFire or cleanPutFire then 4
         else if pullbackTimedOut then 0
         else if fiveCloseBar then
             if fiveInsideBar then
@@ -539,13 +555,6 @@ script PmzEntryMachine {
             else statePrev
         else statePrev;
 
-    def nextArm =
-        if cleanCallFire or cleanPutFire then 0
-        else if armsCleanCall then 1
-        else if armsCleanPut then 2
-        else if cleanArmConsumed then 0
-        else armPrev;
-
     def nextBudget =
         if sessionOpen then 0
         else if pullbackCallFire or pullbackPutFire or cleanCallFire or cleanPutFire then 0
@@ -555,7 +564,26 @@ script PmzEntryMachine {
         else if pullbackMiss and !fiveCloseBar then budgetAfterOneMinute
         else budgetPrev;
 
-    plot newCode = nextState + nextArm * 10 + nextBudget * 100;
+    def nextNeutral =
+        if sessionOpen then 1
+        else if fiveCloseBar and fiveInsideBar then 1
+        else if fiveCloseBar and (fiveAboveBar or fiveBelowBar) then 0
+        else neutralPrev;
+
+    def nextTookCall =
+        if sessionOpen then 0
+        else if fiveCloseBar and fiveInsideBar then 0
+        else if cleanCallFire or pullbackCallFire then 1
+        else tookCallPrev;
+    def nextTookPut =
+        if sessionOpen then 0
+        else if fiveCloseBar and fiveInsideBar then 0
+        else if cleanPutFire or pullbackPutFire then 1
+        else tookPutPrev;
+
+    plot newCode = nextState + nextBudget * 10 + nextNeutral * 100 +
+        nextTookCall * 1000 + nextTookPut * 10000;
+}
 }
 
 # Extension path: wait until form is frozen before entries (and before SM five-min transitions).
@@ -577,6 +605,8 @@ def secFromOpen = if !IsNaN(fiveSlotEpoch) then Floor((nowEpoch - fiveSlotEpoch)
 def fiveSlot = if secFromOpen >= 0 then Floor(secFromOpen / 300) else -1;
 def isFiveMinuteClose = GetAggregationPeriod() <= AggregationPeriod.MIN and fiveSlot >= 1 and fiveSlot != fiveSlot[1];
 def smFiveMinuteClose = isFiveMinuteClose and !(NightMode and inExtensionForm);
+def isLastMinuteOfFive = GetAggregationPeriod() <= AggregationPeriod.MIN and secFromOpen >= 0 and
+    Floor(secFromOpen / 300) != Floor((secFromOpen + 60) / 300);
 def isSessionOpen = (!IsNaN(sessionOpenEpoch) and nowEpoch >= sessionOpenEpoch and
     (IsNaN(nowEpoch[1]) or nowEpoch[1] < sessionOpenEpoch)) or
     (NightMode and isCashOpenPulse);
@@ -624,6 +654,9 @@ def fiveCallWithinDistanceFlag = if fiveCallWithinDistance then 1 else 0;
 def fivePutWithinDistanceFlag = if fivePutWithinDistance then 1 else 0;
 def enableFullReversalFlag = if EnableFullReversalFreshBreakout then 1 else 0;
 
+def isLastMinuteOfFiveFlag = if isLastMinuteOfFive then 1 else 0;
+def fiveOverlapsPmzFlag = 0;
+
 def smState = CompoundValue(1,
     PmzEntryMachine(
         smState[1],
@@ -636,44 +669,70 @@ def smState = CompoundValue(1,
         fiveAboveFlag,
         fiveBelowFlag,
         fiveInsideFlag,
+        fiveOverlapsPmzFlag,
         callWithinDistanceFlag,
         putWithinDistanceFlag,
         fiveCallWithinDistanceFlag,
         fivePutWithinDistanceFlag,
         MaxTriggerCandles,
-        enableFullReversalFlag).newCode,
+        enableFullReversalFlag,
+        isLastMinuteOfFiveFlag).newCode,
     0);
 
 def state = Floor(smState % 10);
-def cleanArm = Floor(Floor(smState / 10) % 10);
-def triggerBudget = Floor(smState / 100);
+def triggerBudget = Floor(Floor(smState / 10) % 10);
+def neutralGate = Floor(Floor(smState / 100) % 10);
+def tookCall = Floor(Floor(smState / 1000) % 10);
+def tookPut = Floor(smState / 10000);
+def cleanArm = 0;
 
+# Entry fires are computed at study scope so markers use native booleans, not script yes/no inputs.
 def statePrev = if IsNaN(smState[1]) then 0 else Floor(smState[1] % 10);
-def armPrev = if IsNaN(smState[1]) then 0 else Floor(Floor(smState[1] / 10) % 10);
+def neutralPrev = if IsNaN(smState[1]) then 0 else Floor(Floor(smState[1] / 100) % 10);
+def tookCallPrev = if IsNaN(smState[1]) then 0 else Floor(Floor(smState[1] / 1000) % 10);
+def tookPutPrev = if IsNaN(smState[1]) then 0 else Floor(smState[1] / 10000);
 def fullReversalToCallFire = EnableFullReversalFreshBreakout and statePrev == 4 and fiveAbove;
 def fullReversalToPutFire = EnableFullReversalFreshBreakout and statePrev == 3 and fiveBelow;
-def isFirstEntryGateBoundaryFire = smFiveMinuteClose and isFirstFiveSlot;
+def isFirstEntryGateBoundaryFire = smFiveMinuteClose and fiveSlot == 1;
 def crossThroughCleanCallFire = smFiveMinuteClose and statePrev == 2 and fiveAbove and fiveCallWithinDistance;
 def crossThroughCleanPutFire = smFiveMinuteClose and statePrev == 1 and fiveBelow and fivePutWithinDistance;
 def sameBarCleanCallFire = smFiveMinuteClose and fiveAbove and fiveCallWithinDistance and
     (fullReversalToCallFire or (statePrev == 0 and isFirstEntryGateBoundaryFire) or crossThroughCleanCallFire);
 def sameBarCleanPutFire = smFiveMinuteClose and fiveBelow and fivePutWithinDistance and
     (fullReversalToPutFire or (statePrev == 0 and isFirstEntryGateBoundaryFire) or crossThroughCleanPutFire);
-def cleanCallFire = entriesAllowed and oneAbove and callWithinDistance and (armPrev == 1 or sameBarCleanCallFire);
-def cleanPutFire = entriesAllowed and oneBelow and putWithinDistance and (armPrev == 2 or sameBarCleanPutFire);
-def pullbackCallFire = entriesAllowed and statePrev == 1 and oneAbove and callWithinDistance;
-def pullbackPutFire = entriesAllowed and statePrev == 2 and oneBelow and putWithinDistance;
+def typeAFromNeutralCallFire = neutralPrev == 1 and !smFiveMinuteClose and !isLastMinuteOfFive and
+    oneAbove and callWithinDistance and tookCallPrev == 0;
+def typeAFromNeutralPutFire = neutralPrev == 1 and !smFiveMinuteClose and !isLastMinuteOfFive and
+    oneBelow and putWithinDistance and tookPutPrev == 0;
+def insideFamilyFire = statePrev == 0 or statePrev == 1 or statePrev == 2;
+def typeCCallFire = smFiveMinuteClose and fiveAbove and oneAbove and callWithinDistance and
+    fiveCallWithinDistance and (insideFamilyFire or fullReversalToCallFire or neutralPrev == 1);
+def typeCPutFire = smFiveMinuteClose and fiveBelow and oneBelow and putWithinDistance and
+    fivePutWithinDistance and (insideFamilyFire or fullReversalToPutFire or neutralPrev == 1);
+def cleanCallFire = entriesAllowed and oneAbove and callWithinDistance and
+    (sameBarCleanCallFire or typeAFromNeutralCallFire or typeCCallFire);
+def cleanPutFire = entriesAllowed and oneBelow and putWithinDistance and
+    (sameBarCleanPutFire or typeAFromNeutralPutFire or typeCPutFire);
+def pullbackCallFire = entriesAllowed and statePrev == 1 and oneAbove and callWithinDistance and tookCallPrev == 0;
+def pullbackPutFire = entriesAllowed and statePrev == 2 and oneBelow and putWithinDistance and tookPutPrev == 0;
 def callFire = cleanCallFire or pullbackCallFire;
 def putFire = cleanPutFire or pullbackPutFire;
+def pullbackFire = pullbackCallFire or pullbackPutFire;
 
+# Hidden diagnostic plots (Data Window). Markers = PMZ SM only (T1–T3 fan-out); not T5.
 plot DebugState = state;
 plot DebugCleanArm = cleanArm;
 plot DebugBudget = triggerBudget;
+plot DebugNeutralGate = neutralGate;
+plot DebugTookCall = tookCall;
+plot DebugTookPut = tookPut;
 plot DebugGateOpen = if entriesAllowed then 1 else 0;
 plot DebugOneAbove = if oneAbove then 1 else 0;
 plot DebugOneBelow = if oneBelow then 1 else 0;
 plot DebugCallDist = callDistance;
 plot DebugPutDist = putDistance;
+
+
 plot DebugNightMode = if NightMode then 1 else 0;
 plot DebugNightFormValid = if nightFormValid then 1 else 0;
 plot DebugNightFormFrozen = if nightFormFrozen then 1 else 0;
@@ -686,6 +745,9 @@ plot DebugReopenKind = if isWeekdayReopen then 1 else if isWeekendReopen then 2 
 DebugState.Hide();
 DebugCleanArm.Hide();
 DebugBudget.Hide();
+DebugNeutralGate.Hide();
+DebugTookCall.Hide();
+DebugTookPut.Hide();
 DebugGateOpen.Hide();
 DebugOneAbove.Hide();
 DebugOneBelow.Hide();
@@ -777,6 +839,7 @@ AddLabel(
     (if cleanArm == 1 then "Call"
     else if cleanArm == 2 then "Put"
     else "None") +
+    (if neutralGate == 1 then " | N" else "") +
     " | Dist " +
     AsText(callDistance, NumberFormat.TWO_DECIMAL_PLACES) + "/" +
     AsText(putDistance, NumberFormat.TWO_DECIMAL_PLACES),
@@ -860,6 +923,8 @@ AddLabel(bannerActive,
     (if cleanArm == 1 then "Call"
     else if cleanArm == 2 then "Put"
     else "None") +
+    " | Neutral: " + (if neutralGate == 1 then "Yes" else "No") +
+    " | Took C/P: " + tookCall + "/" + tookPut +
     " | Budget: " + triggerBudget,
     Color.WHITE);
 

@@ -1,39 +1,52 @@
-# PMZBot T1+T2+T3 Entry Indicator
+# PMZBot / TrendyIndicators — TOS PMZ entry studies
 
-A standalone ThinkOrSwim (ThinkScript) study for `/ES` continuous futures that visually
-replicates the PMZBot trading bot's PMZ entry signal logic — without needing the bot running.
-It plots the adjusted PMZ band, the ±distance admission gate, neutral markers, and CALL/PUT
-entry triangles at the same bar the bot's live `PmzEntryStateMachine` would fire.
+ThinkOrSwim ThinkScript studies that plot PMZ bands and CALL/PUT entry markers for the
+PMZBot-style entry state machine (entries only; bot does not need to be running).
 
-**File:** `PMZBot_T1T3_EntryIndicator.ts.txt`
+**Reference (night band math):** `Tr3ndyPMZ.ts.txt` / `Tr3ndyPMZ_Adjusted.ts.txt`
 
-## What it does
+## Study files
 
-- Computes the premarket PMZ High/Low band from `/ES` continuous futures price action
-  (07:25–09:30 ET), applying the same 5–8 point width clamp the bot uses
-  (`PmzWidthAdjuster`-equivalent).
-- Implements the same five-state pullback admission model as the bot's entry state machine:
-  `InPMZ_NoPullback`, `InPMZ_CallPullback`, `InPMZ_PutPullback`, `OutsidePmz(Call)`,
-  `OutsidePmz(Put)` — including the 09:35 ET entry gate, max-distance rejection, full-reversal
-  arming, and pass-through reset.
-- Plots a single CALL/PUT marker per admission (labeled to represent the bot's T1+T2+T3
-  simultaneous tier fan-out — it does not simulate tier exits, slot occupancy, or which tiers
-  are already in a trade).
+| File | Role |
+|------|------|
+| `PMZBot_T1T3_EntryIndicator.ts.txt` | **Day only** (canonical name; same as `_Day`) |
+| `PMZBot_T1T3_EntryIndicator_Day.ts.txt` | **Day only** — cash RTH entries, bot day parity |
+| `PMZBot_T1T3_EntryIndicator_DayOrNight.ts.txt` | **Day *or* night** via `NightMode` / `futures` flags (not both at once) |
+
+## Day only
+
+- Premarket PMZ (≈07:25–09:30), 5–8 pt width clamp (hardcoded in day study), entry gate 09:35.
+- Five-state pullback admission (bot `PmzEntryStateMachine` methodology).
+- Cash RTH epoch anchors (`RegularTradingStart`/`End`) for timezone-safe day gates.
+
+## Day-or-night (`_DayOrNight`)
+
+### Day mode (`NightMode = no`, default)
+
+- Same day entry methodology as day-only, plus **adjustable** clamp (`MinPmzWidthPoints` /
+  `MaxPmzWidthPoints`, defaults 5–8).
+- Optional `futures = yes`: show the **night PMZ band only** (no night entry markers).
+
+### Night mode (`NightMode = yes`)
+
+- **Night-only:** suppresses day band and day entries. During cash RTH the study is **blank**.
+- Night PMZ form follows Tr3ndy with **Sunday form extension** (`NightFormExtensionMinutes`).
+- Night entries use the same state machine; clocks derived from cash RTH epochs (not platform TZ).
+- Shared knobs: distance, trigger budget, full-reversal, width clamp min/max.
 
 ## Explicitly out of scope
 
 - Exit markers, consolidation pause, active-trade/cooldown/de-dupe awareness, tier-close
   simulation — entries only.
-- SPX strike/premium selection, IV, DTE — this is a pure ES-price entry-timing visual, not a
+- SPX strike/premium selection, IV, DTE — this is a pure price entry-timing visual, not a
   trade sizing tool.
+- Bot overnight execution (bot is SPX day-only).
 
 ## Setup in TOS
 
-1. Chart: **TOS continuous `/ES`**, **1-minute**, with extended/pre-market hours enabled and
-   at least a few days of lookback (the premarket accumulator needs a full prior session to
-   seed correctly).
-2. Studies → Edit Studies → Create → paste the full contents of
-   `PMZBot_T1T3_EntryIndicator.ts.txt` → Apply.
+1. Chart: **TOS continuous `/ES`** (or equity with extended hours for day), **1-minute**,
+   extended/pre-market hours enabled, multi-day lookback.
+2. Studies → Edit Studies → Create → paste the chosen study file → Apply.
 3. Confirm the study is on the **price subgraph** (not a separate lower panel) — if PMZ/gate
    lines don't track the ES price axis, use the study's gear icon → Move to → Existing
    subgraph → Price.
@@ -43,25 +56,26 @@ entry triangles at the same bar the bot's live `PmzEntryStateMachine` would fire
    follow the chart viewport or cursor.
 5. To inspect a **historical** bar's internal state, hover the crosshair over that bar and
    check the Data Window/tooltip for the hidden `Debug*` plots (`DebugState`, `DebugCleanArm`,
-   `DebugBudget`, `DebugGateOpen`, `DebugOneAbove`, `DebugOneBelow`, `DebugCallDist`,
-   `DebugPutDist`) — unlike labels, plots are inspectable on any bar, not just the latest one.
-   TOS may hide plot *names* next to their values by default; there's usually a per-study
-   toggle (gear/eye icon near the study name) to show them.
+   `DebugBudget`, `DebugGateOpen`, `DebugOneAbove`/`Below`, `DebugCallDist`/`PutDist`,
+   `DebugNightMode`, `DebugNightFormValid`/`Frozen`, `DebugPrimaryLocked`, `DebugInExtension`,
+   `DebugInNightDisplay`, `DebugFiveSlot`, `DebugNightEntries`, `DebugReopenKind` 1=weekday /
+   2=weekend / 3=long-gap) — unlike labels, plots are inspectable on any bar. Enable plot names
+   via the study gear/eye if TOS hides them.
+6. **Lookback:** for Sunday night, load chart history through the prior **Friday 15:55+** so
+   `lastRthEnd` can latch (cash-close anchor).
 
 ## Known limitations / open items
 
-- **Timezone:** session boundaries are anchored to `RegularTradingStart()`/
-  `RegularTradingEnd()` (absolute epoch time), so they're correct regardless of the platform's
-  displayed time zone. This does **not** yet extend to the non-default "ALL" premarket mode
-  or the optional after-hours overlay (`futures` input, off by default) — those still compare
-  raw ET clock literals against the platform's displayed clock and will misalign on a non-
-  Eastern platform.
+- **Timezone:** day and night **core** gates use cash RTH epoch anchors + fixed offsets
+  (independent of platform display timezone). Non-default day `Premarket = ALL` still uses
+  platform-clock literals for day accumulation only.
+- **ThinkScript has no Globex API:** night reopen is `cashClose+2h` (Mon–Thu), `+50h` (Fri→Sun
+  style), and/or a long bar-gap reopen detector. Holiday afternoon breaks are not calendared.
 - **Validation:** parity against the bot's 23 `TestScenarios.cs` fixtures has only been
   checked analytically (code trace) for the full-reversal/cross-through scenarios (07, 08, 09,
   23) — a real TOS replay of the full scenario set, a side-by-side PNG comparison, and a live
   session spot-check against bot log timestamps are all still outstanding.
-- The `tasks.md`-vs-script `PullbackConfirmation` input naming mismatch flagged in PR #217's
-  review was never resolved — the script has no such input (it's always strict-pullback mode).
+- Always **strict pullback** mode (no `PullbackConfirmation` input).
 
 ## Debugging notes from initial live TOS testing (2026-07-12)
 

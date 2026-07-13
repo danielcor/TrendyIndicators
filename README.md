@@ -12,6 +12,7 @@ PMZBot-style entry state machine (entries only; bot does not need to be running)
 | `PMZBot_T1T3_EntryIndicator.ts.txt` | **Day only** (canonical name; same as `_Day`) |
 | `PMZBot_T1T3_EntryIndicator_Day.ts.txt` | **Day only** — cash RTH entries, bot day parity |
 | `PMZBot_T1T3_EntryIndicator_DayOrNight.ts.txt` | **Day *or* night** via `NightMode` / `futures` flags (not both at once) |
+| `PMZBot_T1T3_EntryIndicator_Auto.ts.txt` | **Day *and* night** auto: futures (symbol has `/`) get both sessions; equities day-only. No NightMode/PRE/futures flags. |
 
 ## Day only
 
@@ -33,6 +34,16 @@ PMZBot-style entry state machine (entries only; bot does not need to be running)
 - Night PMZ form follows Tr3ndy with **Sunday form extension** (`NightFormExtensionMinutes`).
 - Night entries use the same state machine; clocks derived from cash RTH epochs (not platform TZ).
 - Shared knobs: distance, trigger budget, full-reversal, width clamp min/max.
+
+## Auto (day and night)
+
+`PMZBot_T1T3_EntryIndicator_Auto.ts.txt` runs **two** entry state machines:
+
+- **Day** in cash RTH (all symbols).
+- **Night** only when the chart symbol matches continuous futures (`GetSymbol() matches "/*"`, e.g. `/ES:XCME`).
+- No `NightMode`, `Premarket`, or `futures` inputs. Still has clamp min/max, distance, budget, banners.
+
+Equity charts (SPY, AAPL, …) never arm night entries. Futures get day markers in RTH and night markers overnight.
 
 ## Explicitly out of scope
 

@@ -1,0 +1,911 @@
+##
+# PMZBot T1+T2+T3 Entry Indicator — Auto (day AND night, no mode flags)
+# File: PMZBot_T1T3_EntryIndicator_Auto.ts.txt
+# Purpose: Concurrent day + night sessions by clock. Futures vs equity inferred from GetSymbol().
+#   Futures (TOS continuous typically contain "/"): day cash entries + Globex night entries.
+#   Equity (e.g. SPY, AAPL): day cash entries only.
+# No NightMode / Premarket / futures inputs. Clamp min/max still user-adjustable.
+# Scope: entries only. No exits, slot occupancy, cooldown/de-dupe, active-trade caps, or consolidation pause.
+# Import: TOS Studies -> Edit Studies -> Create -> paste; 1-minute chart with extended hours.
+# TOS continuous /ES and the TOS LIS definition below are the canonical chart reference.
+# Lines must overlay the price axis. If PMZ/gate lines do not align with the ES scale, edit the
+# study on the chart -> gear icon -> make sure it is on the price subgraph (not a lower panel).
+#
+# Tr3ndy PMZ - https://www.trendytrading.co/scripts/script-shop#PMZ
+# Copyright trendytrading.co, for information visit https://www.trendytrading.co/utilities/terms-conditions
+# @beezy
+# 2023 - Simpler Trading
+# http://www.simplertrading.com
+# *** Sharing and/or modification of this source code is expressly prohibited by the terms of your user agreement ***
+# Revision date: June 16,2023
+# @danielcor - 2025 - Peakbot - change to add PMZ risk adjustment option (max clamp only)
+# Revision date: Aug 25,2025
+# @danielcor - 2026 - Peakbot - Auto day+night, symbol profile, TZ-safe epochs, adjustable clamp, Sunday form extension
+##
+
+declare upper;
+declare once_per_bar;
+
+# Hidden anchor ties study scaling to the symbol price axis (prevents drift in a separate panel).
+plot ScaleAnchor = close;
+ScaleAnchor.Hide();
+
+# Profile from ticker: TOS continuous futures usually include "/" (e.g. /ES:XCME). Equities do not.
+def isFuturesProfile = GetSymbol() matches "/*";
+
+input Banner = no;
+#hint Banner: Debug labels (PMZ state, distance, gate). Off by default; distance-chart mode is visual.
+input ShowStatusStrip = yes;
+#hint ShowStatusStrip: Large high-contrast PMZ and distance-gate values in the chart corner.
+input ShowDistanceChartStyle = yes;
+#hint ShowDistanceChartStyle: Match the /distance chart: PMZ band, +/- distance gate, admit slivers, triangles.
+input ShowEntryMarkers = yes;
+#hint ShowEntryMarkers: Green/red triangles at the 1-minute close on entry fires. Requires a 1-minute /ES chart.
+input ShowNeutralLines = yes;
+#hint ShowNeutralLines: Dotted vertical lines when neutral is asserted (session open, 5-min inside PMZ).
+input AdjustPMZ = yes;
+#hint AdjustPMZ: Clamp PMZ width to [MinPmzWidthPoints, MaxPmzWidthPoints] (center-preserving). Production default yes.
+input MinPmzWidthPoints = 5.0;
+#hint MinPmzWidthPoints: Expand band if original risk is narrower. Day bot parity default 5.
+input MaxPmzWidthPoints = 8.0;
+#hint MaxPmzWidthPoints: Contract band if original risk is wider. Day bot parity default 8. If Min > Max, clamp is skipped.
+input ShowPMZBand = yes;
+#hint ShowPMZBand: Plot the adjusted PMZ band. On by default; also enabled by ShowDistanceChartStyle.
+input ShowOriginalPMZWhenAdjusted = no;
+#hint ShowOriginalPMZWhenAdjusted: Plot the unadjusted PMZ band in gray when AdjustPMZ is enabled.
+input MaxDistanceOutsidePmzPoints = 10.0;
+#hint MaxDistanceOutsidePmzPoints: CALL distance is close - PMZ Low; PUT distance is PMZ High - close. Strict greater-than rejection.
+input MaxTriggerCandles = 5;
+#hint MaxTriggerCandles: One-minute trigger budget after a 5-minute inside-PMZ pullback confirmation.
+input EnableFullReversalFreshBreakout = yes;
+#hint EnableFullReversalFreshBreakout: Treat a 5-minute outside-to-opposite-outside traversal as a fresh clean breakout arm.
+input EntryGateTimeET = 0935;
+#hint EntryGateTimeET: Day mode only — HHmm offset from cash RegularTradingStart (0935 = +5 minutes). Not platform clock.
+input NightFormExtensionMinutes = 60;
+#hint NightFormExtensionMinutes: If classic 15:55-18:00 form has no valid H/L (e.g. Sunday), form from Globex reopen for this many minutes (clamped 0-240).
+
+def period = if GetAggregationPeriod() <= AggregationPeriod.FIVE_MIN then
+    AggregationPeriod.FIVE_MIN
+   else GetAggregationPeriod();
+
+def price = close(period = period);
+def h = high(period = period);
+def l = low(period = period);
+def o = open(period = period);
+
+# -----------------------------------------------------------------------------
+# Cash RTH anchors (absolute epoch ms). On /ES these are cash 09:30-16:00 style
+# boundaries, NOT Globex 18:00-17:00. Night epochs are DERIVED as fixed offsets
+# from these so the study is independent of platform display timezone.
+# -----------------------------------------------------------------------------
+def rthStartEpoch = RegularTradingStart(GetYYYYMMDD());
+def rthEndEpoch = RegularTradingEnd(GetYYYYMMDD());
+def nowEpoch = GetTime();
+def minuteMs = 60 * 1000;
+def hourMs = 60 * minuteMs;
+def dayMs = 24 * hourMs;
+
+def entryGateMinutesSinceMidnight = Floor(EntryGateTimeET / 100) * 60 + EntryGateTimeET % 100;
+def dayEntryGateEpoch = if !IsNaN(rthStartEpoch) then
+    rthStartEpoch + (entryGateMinutesSinceMidnight - (9 * 60 + 30)) * minuteMs
+    else Double.NaN;
+def premarketStartEpoch = if !IsNaN(rthStartEpoch) then rthStartEpoch - 125 * minuteMs else Double.NaN;
+def premarketResetEpoch = if !IsNaN(rthEndEpoch) then rthEndEpoch - 5 * minuteMs else Double.NaN;
+def lisResetEpoch = rthEndEpoch;
+
+# Cash RTH window used for blank-when-NightMode and day band.
+def inCashRth = !IsNaN(rthStartEpoch) and !IsNaN(premarketResetEpoch) and
+    nowEpoch >= rthStartEpoch and nowEpoch < premarketResetEpoch;
+def isCashOpenPulse = !IsNaN(rthStartEpoch) and nowEpoch >= rthStartEpoch and
+    (IsNaN(nowEpoch[1]) or nowEpoch[1] < rthStartEpoch);
+
+# Carry last known cash close for the active night session only.
+# Latch at form start (cash close - 5m); clear at next cash open so mid-day does not keep Friday's base.
+def lastRthEndEpoch = CompoundValue(1,
+    if isCashOpenPulse then Double.NaN
+    else if !IsNaN(rthEndEpoch) and nowEpoch >= (rthEndEpoch - 5 * minuteMs) then rthEndEpoch
+    else if !IsNaN(lastRthEndEpoch[1]) then lastRthEndEpoch[1]
+    else Double.NaN,
+    Double.NaN);
+
+# Midnight anchor for bubble clock labels. Weekend: advance last cash-day midnight to the bar's day.
+def fridayMidnightEpoch = if !IsNaN(lastRthEndEpoch) then lastRthEndEpoch - 16 * hourMs else Double.NaN;
+def midnightEtEpoch = if !IsNaN(rthStartEpoch) then rthStartEpoch - (9 * 60 + 30) * minuteMs
+    else if !IsNaN(fridayMidnightEpoch) and !IsNaN(nowEpoch) then
+        fridayMidnightEpoch + Floor((nowEpoch - fridayMidnightEpoch) / dayMs) * dayMs
+    else Double.NaN;
+
+# Night epoch table (docs: ET walls; runtime: offsets from lastRthEnd / next cash open).
+# Mon-Thu reopen = cash close + 2h. Fri close -> Sun 18:00 ~= +50h.
+# Weekday reopen only if the bar is NEAR that epoch (else Sunday falsely matches Fri 18:00).
+def nightFormStartEpoch = if !IsNaN(lastRthEndEpoch) then lastRthEndEpoch - 5 * minuteMs else Double.NaN;
+def weekdayReopenEpoch = if !IsNaN(lastRthEndEpoch) then lastRthEndEpoch + 2 * hourMs else Double.NaN;
+# Fri 16:00 wall → Sun 18:00 wall: same calendar offset as two midnights + 18h from Fri midnight.
+# Uses dayMs-normalized midnights so spring-forward does not skew absolute +50h.
+def weekendReopenEpoch = if !IsNaN(fridayMidnightEpoch) then
+    fridayMidnightEpoch + 2 * dayMs + 18 * hourMs
+    else Double.NaN;
+def reopenProximityMs = 3 * hourMs;
+
+def isWeekdayReopen = !IsNaN(weekdayReopenEpoch) and
+    nowEpoch >= weekdayReopenEpoch and nowEpoch < weekdayReopenEpoch + reopenProximityMs and
+    (IsNaN(nowEpoch[1]) or nowEpoch[1] < weekdayReopenEpoch);
+def isWeekendReopen = !IsNaN(weekendReopenEpoch) and
+    nowEpoch >= weekendReopenEpoch and nowEpoch < weekendReopenEpoch + reopenProximityMs and
+    (IsNaN(nowEpoch[1]) or nowEpoch[1] < weekendReopenEpoch);
+# Long-gap: first bar after dark that lands within 12h after expected weekday/weekend reopen
+# (covers late first prints outside the tight 3h pulse window, not mid-session holes).
+# Shared next-cash-open close for night display/entries (weekend fallback when rthStart NaN).
+def nightEntryCloseEpoch = if !IsNaN(rthStartEpoch) then
+    (if nowEpoch < rthStartEpoch then rthStartEpoch else rthStartEpoch + dayMs)
+    else if !IsNaN(lastRthEndEpoch) then lastRthEndEpoch + (65 * hourMs + 30 * minuteMs)
+    else Double.NaN;
+def longGapReopen = !IsNaN(nowEpoch[1]) and (nowEpoch - nowEpoch[1]) >= 12 * hourMs and
+    !IsNaN(lastRthEndEpoch) and nowEpoch > lastRthEndEpoch and
+    (IsNaN(nightEntryCloseEpoch) or nowEpoch < nightEntryCloseEpoch) and
+    (( !IsNaN(weekdayReopenEpoch) and nowEpoch >= weekdayReopenEpoch and
+        (nowEpoch - weekdayReopenEpoch) <= 12 * hourMs) or
+     ( !IsNaN(weekendReopenEpoch) and nowEpoch >= weekendReopenEpoch and
+        (nowEpoch - weekendReopenEpoch) <= 12 * hourMs));
+def isGlobexReopen = isWeekdayReopen or isWeekendReopen or longGapReopen;
+
+def nightFormReset = !IsNaN(nightFormStartEpoch) and nowEpoch >= nightFormStartEpoch and
+    (IsNaN(nowEpoch[1]) or nowEpoch[1] < nightFormStartEpoch);
+
+# Effective reopen epoch for gate/slots.
+def globexReopenEpoch = CompoundValue(1,
+    if isGlobexReopen then
+        (if isWeekdayReopen then weekdayReopenEpoch
+        else if isWeekendReopen then weekendReopenEpoch
+        else nowEpoch)
+    else if nightFormReset or isCashOpenPulse then Double.NaN
+    else globexReopenEpoch[1],
+    Double.NaN);
+
+def nightEntryOpenEpoch = if !IsNaN(globexReopenEpoch) then globexReopenEpoch + 5 * minuteMs else Double.NaN;
+
+def inPrimaryNightForm = !IsNaN(nightFormStartEpoch) and !IsNaN(weekdayReopenEpoch) and
+    nowEpoch > nightFormStartEpoch and nowEpoch < weekdayReopenEpoch;
+
+# Night display: primary form window, or after reopen until next cash open, but not all weekend
+# after a Friday phantom reopen (cap post-reopen display at 16h unless still before cash open overnight).
+def inNightDisplay = !inCashRth and (
+    inPrimaryNightForm or
+    (!IsNaN(globexReopenEpoch) and !IsNaN(nightEntryCloseEpoch) and
+     nowEpoch >= globexReopenEpoch and nowEpoch < nightEntryCloseEpoch and
+     (nowEpoch - globexReopenEpoch) <= 16 * hourMs));
+
+plot color = Double.NaN;
+color.Hide();
+color.DefineColor("pbull", Color.CYAN);
+color.DefineColor("pbear", Color.RED);
+color.DefineColor("fbull", Color.GREEN);
+color.DefineColor("fbear", Color.YELLOW);
+color.DefineColor("original_gray", Color.GRAY);
+
+def LIS = if !IsNaN(lisResetEpoch) and nowEpoch >= lisResetEpoch and
+    (IsNaN(nowEpoch[1]) or nowEpoch[1] < lisResetEpoch) then price else LIS[1];
+def otime = if !IsNaN(rthStartEpoch) and nowEpoch >= rthStartEpoch and
+    (IsNaN(nowEpoch[1]) or nowEpoch[1] < rthStartEpoch) then o else otime[1];
+def gapAmount = if !IsNaN(otime) and !IsNaN(LIS) then otime - LIS else Double.NaN;
+
+# Day premarket always cash PRE window (epoch-safe). No Premarket input.
+def nperiod = !IsNaN(premarketStartEpoch) and !IsNaN(rthStartEpoch) and
+    nowEpoch > premarketStartEpoch and nowEpoch < rthStartEpoch;
+
+def pmzReset = !IsNaN(premarketResetEpoch) and nowEpoch >= premarketResetEpoch and
+    (IsNaN(nowEpoch[1]) or nowEpoch[1] < premarketResetEpoch);
+
+def pmh = if pmzReset then 0
+   else if nperiod then
+       if pmh[1] > h then pmh[1] else h
+   else pmh[1];
+
+def pmhTimeSec = if pmzReset then Double.NaN
+    else if nperiod then
+        if pmh[1] > h then pmhTimeSec[1]
+        else if !IsNaN(midnightEtEpoch) then Floor((nowEpoch - midnightEtEpoch) / 1000)
+        else Double.NaN
+    else pmhTimeSec[1];
+
+def pml = if pmzReset then 100000
+    else if nperiod then
+        if pml[1] < l then pml[1] else l
+    else pml[1];
+
+def pmlTimeSec = if pmzReset then Double.NaN
+    else if nperiod and l > 0 then
+        if pml[1] < l then pmlTimeSec[1]
+        else if !IsNaN(midnightEtEpoch) then Floor((nowEpoch - midnightEtEpoch) / 1000)
+        else Double.NaN
+    else pmlTimeSec[1];
+
+def gap = if nperiod then
+    if o < LIS then 0 else 1
+    else gap[1];
+
+# Tr3ndy RTH legs (gap-down may invert upper/lower plot assignment).
+# Active band always orders high >= low so inside/distance match bot semantics.
+def dayUpper = if inCashRth then
+    if gap then
+        pmh - ((pmh - pml) * .2)
+    else
+      pml + ((pmh - pml) * .2)
+    else Double.NaN;
+
+def dayLower = if inCashRth then
+    if gap then
+        pmh - ((pmh - pml) * .4) else pml + ((pmh - pml) * .4)
+    else Double.NaN;
+
+def dayBandHighRaw = if !IsNaN(dayUpper) and !IsNaN(dayLower) then
+    (if dayUpper >= dayLower then dayUpper else dayLower) else dayUpper;
+def dayBandLowRaw = if !IsNaN(dayUpper) and !IsNaN(dayLower) then
+    (if dayUpper >= dayLower then dayLower else dayUpper) else dayLower;
+
+def clampInputsValid = MinPmzWidthPoints <= MaxPmzWidthPoints;
+def clampEnabled = AdjustPMZ and clampInputsValid;
+
+def dayOriginalRisk = if !IsNaN(dayBandHighRaw) and !IsNaN(dayBandLowRaw) then
+    AbsValue(dayBandHighRaw - dayBandLowRaw) else Double.NaN;
+def dayAdjustedRisk = if clampEnabled and !IsNaN(dayOriginalRisk) then
+    if dayOriginalRisk < MinPmzWidthPoints then MinPmzWidthPoints
+    else if dayOriginalRisk > MaxPmzWidthPoints then MaxPmzWidthPoints
+    else dayOriginalRisk
+    else dayOriginalRisk;
+
+def dayPmzCenter = if !IsNaN(dayBandHighRaw) and !IsNaN(dayBandLowRaw) then
+    (dayBandHighRaw + dayBandLowRaw) / 2 else Double.NaN;
+def dayAdjustedUpper = if clampEnabled and !IsNaN(dayPmzCenter) and !IsNaN(dayAdjustedRisk) then
+    dayPmzCenter + (dayAdjustedRisk / 2)
+    else dayBandHighRaw;
+def dayAdjustedLower = if clampEnabled and !IsNaN(dayPmzCenter) and !IsNaN(dayAdjustedRisk) then
+    dayPmzCenter - (dayAdjustedRisk / 2)
+    else dayBandLowRaw;
+
+def dayPmzHigh = if clampEnabled then dayAdjustedUpper else dayBandHighRaw;
+def dayPmzLow = if clampEnabled then dayAdjustedLower else dayBandLowRaw;
+
+# -----------------------------------------------------------------------------
+# Night form (Tr3ndy primary 15:55-18:00 via epochs) + Peakbot extension after reopen
+# when primary H/L is invalid (typical Sunday Globex open).
+# -----------------------------------------------------------------------------
+def ahhPrimary = if nightFormReset then 0
+    else if inPrimaryNightForm then
+        if ahhPrimary[1] > h then ahhPrimary[1] else h
+    else ahhPrimary[1];
+
+def ahlPrimary = if nightFormReset then 100000
+    else if inPrimaryNightForm then
+        if ahlPrimary[1] < l then ahlPrimary[1] else l
+    else ahlPrimary[1];
+
+def ahSetPrimary = if inPrimaryNightForm then
+    if o < LIS then 0 else 1
+    else ahSetPrimary[1];
+
+def primaryFormValid = ahhPrimary > 0 and ahlPrimary > 0 and ahlPrimary < 100000 and ahhPrimary > ahlPrimary;
+# Primary form must be recent enough for this reopen (not Friday H/L reused on Sunday).
+def primaryFormFresh = primaryFormValid and !IsNaN(nightFormStartEpoch) and
+    nowEpoch - nightFormStartEpoch <= (6 * hourMs);
+# Weekend reopen always extends; long-gap only when primary is not fresh (preserve weekday primary).
+def forceExtensionReopen = isWeekendReopen or (longGapReopen and !primaryFormFresh);
+
+# Lock at reopen: force-extension clears primary; else require fresh primary.
+def primaryValidLocked = CompoundValue(1,
+    if isGlobexReopen then
+        (if forceExtensionReopen then 0 else if primaryFormFresh then 1 else 0)
+    else if nightFormReset or isCashOpenPulse then 0
+    else primaryValidLocked[1],
+    0);
+
+def nightFormExtensionMinutesClamped =
+    if NightFormExtensionMinutes < 0 then 0
+    else if NightFormExtensionMinutes > 240 then 240
+    else NightFormExtensionMinutes;
+def extensionEndEpoch = if !IsNaN(globexReopenEpoch) then
+    globexReopenEpoch + nightFormExtensionMinutesClamped * minuteMs
+    else Double.NaN;
+def inExtensionForm = primaryValidLocked == 0 and !IsNaN(globexReopenEpoch) and !IsNaN(extensionEndEpoch) and
+    nowEpoch >= globexReopenEpoch and nowEpoch < extensionEndEpoch;
+
+def ahhExt = if isGlobexReopen and primaryValidLocked == 0 then h
+    else if inExtensionForm then
+        if ahhExt[1] > h then ahhExt[1] else h
+    else ahhExt[1];
+
+def ahlExt = if isGlobexReopen and primaryValidLocked == 0 then l
+    else if inExtensionForm then
+        if ahlExt[1] < l then ahlExt[1] else l
+    else ahlExt[1];
+
+def ahSetExt = if isGlobexReopen and primaryValidLocked == 0 then
+    (if o < LIS then 0 else 1)
+    else if inExtensionForm then
+        (if o < LIS then 0 else 1)
+    else ahSetExt[1];
+
+def ahh = if primaryValidLocked == 1 then ahhPrimary
+    else if inExtensionForm or (primaryValidLocked == 0 and !IsNaN(globexReopenEpoch) and nowEpoch >= globexReopenEpoch) then ahhExt
+    else ahhPrimary;
+def ahl = if primaryValidLocked == 1 then ahlPrimary
+    else if inExtensionForm or (primaryValidLocked == 0 and !IsNaN(globexReopenEpoch) and nowEpoch >= globexReopenEpoch) then ahlExt
+    else ahlPrimary;
+def ah_set = if primaryValidLocked == 1 then ahSetPrimary
+    else if inExtensionForm or (primaryValidLocked == 0 and !IsNaN(globexReopenEpoch) and nowEpoch >= globexReopenEpoch) then ahSetExt
+    else ahSetPrimary;
+
+def nightFormValid = ahh > 0 and ahl > 0 and ahl < 100000 and ahh > ahl;
+# Extension path active after reopen with primary not locked (even if H/L still invalid).
+def nightExtensionPath = primaryValidLocked == 0 and !IsNaN(globexReopenEpoch) and
+    nowEpoch >= globexReopenEpoch;
+# Freeze band before entries: primary locked, or extension window finished.
+def nightFormFrozen = nightFormValid and (
+    primaryValidLocked == 1 or
+    (!IsNaN(extensionEndEpoch) and nowEpoch >= extensionEndEpoch));
+
+def nightLegA = if nightFormValid then
+    (if ah_set then ahh - ((ahh - ahl) * .2) else ahl + ((ahh - ahl) * .2))
+    else Double.NaN;
+def nightLegB = if nightFormValid then
+    (if ah_set then ahh - ((ahh - ahl) * .4) else ahl + ((ahh - ahl) * .4))
+    else Double.NaN;
+def nightUpperRaw = if !IsNaN(nightLegA) and !IsNaN(nightLegB) then
+    (if nightLegA >= nightLegB then nightLegA else nightLegB) else nightLegA;
+def nightLowerRaw = if !IsNaN(nightLegA) and !IsNaN(nightLegB) then
+    (if nightLegA >= nightLegB then nightLegB else nightLegA) else nightLegB;
+
+def nightOriginalRisk = if !IsNaN(nightUpperRaw) and !IsNaN(nightLowerRaw) then
+    AbsValue(nightUpperRaw - nightLowerRaw) else Double.NaN;
+def nightAdjustedRisk = if clampEnabled and !IsNaN(nightOriginalRisk) then
+    if nightOriginalRisk < MinPmzWidthPoints then MinPmzWidthPoints
+    else if nightOriginalRisk > MaxPmzWidthPoints then MaxPmzWidthPoints
+    else nightOriginalRisk
+    else nightOriginalRisk;
+def nightCenter = if !IsNaN(nightUpperRaw) and !IsNaN(nightLowerRaw) then
+    (nightUpperRaw + nightLowerRaw) / 2 else Double.NaN;
+def nightUpperAdj = if clampEnabled and !IsNaN(nightCenter) and !IsNaN(nightAdjustedRisk) then
+    nightCenter + (nightAdjustedRisk / 2) else nightUpperRaw;
+def nightLowerAdj = if clampEnabled and !IsNaN(nightCenter) and !IsNaN(nightAdjustedRisk) then
+    nightCenter - (nightAdjustedRisk / 2) else nightLowerRaw;
+
+def nightPmzHigh = if clampEnabled then nightUpperAdj else nightUpperRaw;
+def nightPmzLow = if clampEnabled then nightLowerAdj else nightLowerRaw;
+
+# Active band: day in cash RTH; night in night window on futures only (both sessions supported).
+def showNightBand = isFuturesProfile and inNightDisplay and nightFormValid;
+def showDayBand = inCashRth and !IsNaN(dayPmzHigh) and !IsNaN(dayPmzLow);
+
+def pmzHigh = if showDayBand then dayPmzHigh
+    else if showNightBand then nightPmzHigh
+    else Double.NaN;
+def pmzLow = if showDayBand then dayPmzLow
+    else if showNightBand then nightPmzLow
+    else Double.NaN;
+
+def rawHighForOriginal = if showNightBand then nightUpperRaw else dayBandHighRaw;
+def rawLowForOriginal = if showNightBand then nightLowerRaw else dayBandLowRaw;
+def original_pmz_risk = if showNightBand then nightOriginalRisk else dayOriginalRisk;
+def adjusted_risk = if showNightBand then nightAdjustedRisk else dayAdjustedRisk;
+
+def pmzBandActive = (ShowPMZBand or ShowDistanceChartStyle) and
+    ((showDayBand and !IsNaN(dayPmzHigh)) or (showNightBand and nightFormValid));
+def distanceGateActive = ShowDistanceChartStyle and
+    ((showDayBand and !IsNaN(dayPmzHigh)) or (showNightBand and nightFormValid));
+def bandLocked = pmzBandActive and !IsNaN(pmzHigh) and !IsNaN(pmzLow);
+def callGateCeiling = if bandLocked then pmzLow + MaxDistanceOutsidePmzPoints else Double.NaN;
+def putGateFloor = if bandLocked then pmzHigh - MaxDistanceOutsidePmzPoints else Double.NaN;
+def callSliverValid = distanceGateActive and callGateCeiling > pmzHigh;
+def putSliverValid = distanceGateActive and putGateFloor < pmzLow;
+
+plot OriginalPmzHigh = if ShowOriginalPMZWhenAdjusted and AdjustPMZ and bandLocked then rawHighForOriginal else Double.NaN;
+plot OriginalPmzLow = if ShowOriginalPMZWhenAdjusted and AdjustPMZ and bandLocked then rawLowForOriginal else Double.NaN;
+plot PmzBandHigh = if bandLocked then pmzHigh else Double.NaN;
+plot PmzBandLow = if bandLocked then pmzLow else Double.NaN;
+plot DistanceCallGate = if distanceGateActive and !IsNaN(callGateCeiling) then callGateCeiling else Double.NaN;
+plot DistancePutGate = if distanceGateActive and !IsNaN(putGateFloor) then putGateFloor else Double.NaN;
+plot CallSliverHigh = if callSliverValid then callGateCeiling else Double.NaN;
+plot CallSliverLow = if callSliverValid then pmzHigh else Double.NaN;
+plot PutSliverHigh = if putSliverValid then pmzLow else Double.NaN;
+plot PutSliverLow = if putSliverValid then putGateFloor else Double.NaN;
+
+PmzBandHigh.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+PmzBandLow.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+PmzBandHigh.SetDefaultColor(color.Color("pbull"));
+PmzBandLow.SetDefaultColor(Color.MAGENTA);
+PmzBandHigh.SetLineWeight(3);
+PmzBandLow.SetLineWeight(3);
+
+DistanceCallGate.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+DistancePutGate.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+DistanceCallGate.SetDefaultColor(Color.YELLOW);
+DistancePutGate.SetDefaultColor(Color.ORANGE);
+DistanceCallGate.SetStyle(Curve.LONG_DASH);
+DistancePutGate.SetStyle(Curve.LONG_DASH);
+DistanceCallGate.SetLineWeight(2);
+DistancePutGate.SetLineWeight(2);
+
+OriginalPmzHigh.SetDefaultColor(color.Color("original_gray"));
+OriginalPmzLow.SetDefaultColor(color.Color("original_gray"));
+OriginalPmzHigh.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+OriginalPmzLow.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+
+# AddCloud colors must be compile-time constants (no dynamic if/showNightBand).
+AddCloud(OriginalPmzHigh, OriginalPmzLow, color.Color("original_gray"), color.Color("original_gray"), yes);
+AddCloud(PmzBandHigh, PmzBandLow, color.Color("pbull"), Color.MAGENTA, no);
+AddCloud(CallSliverLow, CallSliverHigh, CreateColor(52, 168, 83), CreateColor(52, 168, 83), no);
+AddCloud(PutSliverLow, PutSliverHigh, CreateColor(52, 168, 83), CreateColor(52, 168, 83), no);
+
+script PmzEntryMachine {
+    input prevCode = 0;
+    input isSessionOpen = 0;
+    input isFiveMinuteClose = 0;
+    input isFirstFiveSlot = 0;
+    input entriesAllowed = 0;
+    input oneAbove = 0;
+    input oneBelow = 0;
+    input fiveAbove = 0;
+    input fiveBelow = 0;
+    input fiveInside = 0;
+    input callWithinDistance = 0;
+    input putWithinDistance = 0;
+    input fiveCallWithinDistance = 0;
+    input fivePutWithinDistance = 0;
+    input maxTriggerCandles = 5;
+    input enableFullReversalFreshBreakout = 1;
+
+    def sessionOpen = isSessionOpen != 0;
+    def fiveCloseBar = isFiveMinuteClose != 0;
+    def entriesOk = entriesAllowed != 0;
+    def oneAboveBar = oneAbove != 0;
+    def oneBelowBar = oneBelow != 0;
+    def fiveAboveBar = fiveAbove != 0;
+    def fiveBelowBar = fiveBelow != 0;
+    def fiveInsideBar = fiveInside != 0;
+    def callDistanceOk = callWithinDistance != 0;
+    def putDistanceOk = putWithinDistance != 0;
+    def fiveCallDistanceOk = fiveCallWithinDistance != 0;
+    def fivePutDistanceOk = fivePutWithinDistance != 0;
+    def fullReversalEnabled = enableFullReversalFreshBreakout != 0;
+
+    # Self-heal against a poisoned recursive chain: CompoundValue's seed only rescues bar 0
+    # of the whole loaded history. If prevCode ever evaluates to NaN on a LATER bar (data
+    # gap, weekend/holiday transition), every subsequent bar would otherwise inherit NaN
+    # forever via smState[1] with no way to recover - reset to a clean 0/0/0 instead.
+    def statePrev = if IsNaN(prevCode) then 0 else Floor(prevCode % 10);
+    def armPrev = if IsNaN(prevCode) then 0 else Floor(Floor(prevCode / 10) % 10);
+    def budgetPrev = if IsNaN(prevCode) then 0 else Floor(prevCode / 100);
+
+    # Full-reversal / cross-through arming must key off the RAW previous state (matching
+    # PmzEntryStateMachine.IsFullReversal, which reads previousState before any transition).
+    def fullReversalToCall = fullReversalEnabled and statePrev == 4 and fiveAboveBar;
+    def fullReversalToPut = fullReversalEnabled and statePrev == 3 and fiveBelowBar;
+    def isFirstEntryGateBoundary = fiveCloseBar and isFirstFiveSlot != 0;
+    def crossThroughCleanCall = fiveCloseBar and statePrev == 2 and fiveAboveBar and fiveCallDistanceOk;
+    def crossThroughCleanPut = fiveCloseBar and statePrev == 1 and fiveBelowBar and fivePutDistanceOk;
+    def sameBarCleanCall = fiveCloseBar and fiveAboveBar and fiveCallDistanceOk and
+        (fullReversalToCall or (statePrev == 0 and isFirstEntryGateBoundary) or crossThroughCleanCall);
+    def sameBarCleanPut = fiveCloseBar and fiveBelowBar and fivePutDistanceOk and
+        (fullReversalToPut or (statePrev == 0 and isFirstEntryGateBoundary) or crossThroughCleanPut);
+
+    def cleanCallFire = entriesOk and oneAboveBar and callDistanceOk and (armPrev == 1 or sameBarCleanCall);
+    def cleanPutFire = entriesOk and oneBelowBar and putDistanceOk and (armPrev == 2 or sameBarCleanPut);
+    def pullbackCallFire = entriesOk and statePrev == 1 and oneAboveBar and callDistanceOk;
+    def pullbackPutFire = entriesOk and statePrev == 2 and oneBelowBar and putDistanceOk;
+
+    def cleanArmConsumed = cleanCallFire or cleanPutFire or
+        (armPrev == 1 and (oneBelowBar or (entriesOk and oneAboveBar and !callDistanceOk))) or
+        (armPrev == 2 and (oneAboveBar or (entriesOk and oneBelowBar and !putDistanceOk)));
+
+    def pullbackMiss = (statePrev == 1 or statePrev == 2) and !pullbackCallFire and !pullbackPutFire;
+    def budgetAfterOneMinute = if pullbackMiss and !fiveCloseBar then budgetPrev - 1 else budgetPrev;
+    def pullbackTimedOut = pullbackMiss and !fiveCloseBar and budgetAfterOneMinute <= 0;
+    def armsCleanCall = (sessionOpen and oneAboveBar) or
+        (fiveCloseBar and fiveAboveBar and (statePrev == 0 or fullReversalToCall));
+    def armsCleanPut = (sessionOpen and oneBelowBar) or
+        (fiveCloseBar and fiveBelowBar and (statePrev == 0 or fullReversalToPut));
+
+    def nextState =
+        if sessionOpen then
+            if oneAboveBar then 3 else if oneBelowBar then 4 else 0
+        else if pullbackCallFire or cleanCallFire then 3
+        else if pullbackPutFire or cleanPutFire then 4
+        else if pullbackTimedOut then 0
+        else if fiveCloseBar then
+            if fiveInsideBar then
+                if statePrev == 3 then 1
+                else if statePrev == 4 then 2
+                else statePrev
+            else if fiveAboveBar then 3
+            else if fiveBelowBar then 4
+            else statePrev
+        else statePrev;
+
+    def nextArm =
+        if cleanCallFire or cleanPutFire then 0
+        else if armsCleanCall then 1
+        else if armsCleanPut then 2
+        else if cleanArmConsumed then 0
+        else armPrev;
+
+    def nextBudget =
+        if sessionOpen then 0
+        else if pullbackCallFire or pullbackPutFire or cleanCallFire or cleanPutFire then 0
+        else if pullbackTimedOut then 0
+        else if fiveCloseBar and fiveInsideBar and statePrev == 3 then maxTriggerCandles
+        else if fiveCloseBar and fiveInsideBar and statePrev == 4 then maxTriggerCandles
+        else if pullbackMiss and !fiveCloseBar then budgetAfterOneMinute
+        else budgetPrev;
+
+    plot newCode = nextState + nextArm * 10 + nextBudget * 100;
+}
+
+# Extension path: wait until form is frozen before night entries.
+def nightEntryStartEpoch = if primaryValidLocked == 1 then nightEntryOpenEpoch
+    else if !IsNaN(nightEntryOpenEpoch) and !IsNaN(extensionEndEpoch) then
+        (if nightEntryOpenEpoch > extensionEndEpoch then nightEntryOpenEpoch else extensionEndEpoch)
+    else nightEntryOpenEpoch;
+
+# Dual state machines: day always; night only when futures profile.
+def daySessionOpen = !IsNaN(rthStartEpoch) and nowEpoch >= rthStartEpoch and
+    (IsNaN(nowEpoch[1]) or nowEpoch[1] < rthStartEpoch);
+def daySecFromOpen = if !IsNaN(rthStartEpoch) then Floor((nowEpoch - rthStartEpoch) / 1000) else -1;
+def dayFiveSlot = if daySecFromOpen >= 0 then Floor(daySecFromOpen / 300) else -1;
+def dayFiveMinClose = GetAggregationPeriod() <= AggregationPeriod.MIN and dayFiveSlot >= 1 and dayFiveSlot != dayFiveSlot[1];
+def dayFirstFiveSlot = dayFiveSlot == 1 or (dayFiveSlot >= 1 and dayFiveSlot[1] < 1);
+def dayEntriesAllowed = !IsNaN(dayEntryGateEpoch) and !IsNaN(premarketResetEpoch) and
+    nowEpoch >= dayEntryGateEpoch and nowEpoch < premarketResetEpoch;
+
+def nightSessionOpenEpoch = if primaryValidLocked == 1 then globexReopenEpoch else nightEntryStartEpoch;
+def nightFiveSlotEpoch = if primaryValidLocked == 0 and !IsNaN(nightEntryStartEpoch) then
+    nightEntryStartEpoch - 5 * minuteMs
+    else nightSessionOpenEpoch;
+def nightSecFromOpen = if !IsNaN(nightFiveSlotEpoch) then Floor((nowEpoch - nightFiveSlotEpoch) / 1000) else -1;
+def nightFiveSlot = if nightSecFromOpen >= 0 then Floor(nightSecFromOpen / 300) else -1;
+def nightFiveMinClose = GetAggregationPeriod() <= AggregationPeriod.MIN and nightFiveSlot >= 1 and
+    nightFiveSlot != nightFiveSlot[1] and !inExtensionForm;
+def nightFirstFiveSlot = nightFiveSlot == 1 or (nightFiveSlot >= 1 and nightFiveSlot[1] < 1);
+def nightSessionOpen = isFuturesProfile and !IsNaN(nightSessionOpenEpoch) and
+    nowEpoch >= nightSessionOpenEpoch and (IsNaN(nowEpoch[1]) or nowEpoch[1] < nightSessionOpenEpoch);
+def nightEntriesAllowed = isFuturesProfile and nightFormFrozen and !IsNaN(nightEntryStartEpoch) and
+    !IsNaN(nightEntryCloseEpoch) and nowEpoch >= nightEntryStartEpoch and nowEpoch < nightEntryCloseEpoch and
+    !inCashRth;
+
+def onePeriod = if GetAggregationPeriod() <= AggregationPeriod.MIN then AggregationPeriod.MIN else GetAggregationPeriod();
+def oneClose = close(period = onePeriod);
+def fiveClose = close(period = period);
+
+# Day classifications vs day band
+def dayOneAbove = !IsNaN(dayPmzHigh) and oneClose > dayPmzHigh;
+def dayOneBelow = !IsNaN(dayPmzLow) and oneClose < dayPmzLow;
+def dayFiveAbove = !IsNaN(dayPmzHigh) and fiveClose > dayPmzHigh;
+def dayFiveBelow = !IsNaN(dayPmzLow) and fiveClose < dayPmzLow;
+def dayFiveInside = !IsNaN(dayPmzHigh) and !IsNaN(dayPmzLow) and fiveClose <= dayPmzHigh and fiveClose >= dayPmzLow;
+def dayCallDist = oneClose - dayPmzLow;
+def dayPutDist = dayPmzHigh - oneClose;
+def dayCallOk = !IsNaN(dayCallDist) and dayCallDist <= MaxDistanceOutsidePmzPoints;
+def dayPutOk = !IsNaN(dayPutDist) and dayPutDist <= MaxDistanceOutsidePmzPoints;
+def dayFiveCallOk = !IsNaN(fiveClose - dayPmzLow) and (fiveClose - dayPmzLow) <= MaxDistanceOutsidePmzPoints;
+def dayFivePutOk = !IsNaN(dayPmzHigh - fiveClose) and (dayPmzHigh - fiveClose) <= MaxDistanceOutsidePmzPoints;
+
+# Night classifications vs night band
+def nightOneAbove = !IsNaN(nightPmzHigh) and oneClose > nightPmzHigh;
+def nightOneBelow = !IsNaN(nightPmzLow) and oneClose < nightPmzLow;
+def nightFiveAbove = !IsNaN(nightPmzHigh) and fiveClose > nightPmzHigh;
+def nightFiveBelow = !IsNaN(nightPmzLow) and fiveClose < nightPmzLow;
+def nightFiveInside = !IsNaN(nightPmzHigh) and !IsNaN(nightPmzLow) and fiveClose <= nightPmzHigh and fiveClose >= nightPmzLow;
+def nightCallDist = oneClose - nightPmzLow;
+def nightPutDist = nightPmzHigh - oneClose;
+def nightCallOk = !IsNaN(nightCallDist) and nightCallDist <= MaxDistanceOutsidePmzPoints;
+def nightPutOk = !IsNaN(nightPutDist) and nightPutDist <= MaxDistanceOutsidePmzPoints;
+def nightFiveCallOk = !IsNaN(fiveClose - nightPmzLow) and (fiveClose - nightPmzLow) <= MaxDistanceOutsidePmzPoints;
+def nightFivePutOk = !IsNaN(nightPmzHigh - fiveClose) and (nightPmzHigh - fiveClose) <= MaxDistanceOutsidePmzPoints;
+
+def enableFullReversalFlag = if EnableFullReversalFreshBreakout then 1 else 0;
+
+def daySmState = CompoundValue(1,
+    PmzEntryMachine(
+        daySmState[1],
+        if daySessionOpen then 1 else 0,
+        if dayFiveMinClose then 1 else 0,
+        if dayFirstFiveSlot then 1 else 0,
+        if dayEntriesAllowed then 1 else 0,
+        if dayOneAbove then 1 else 0,
+        if dayOneBelow then 1 else 0,
+        if dayFiveAbove then 1 else 0,
+        if dayFiveBelow then 1 else 0,
+        if dayFiveInside then 1 else 0,
+        if dayCallOk then 1 else 0,
+        if dayPutOk then 1 else 0,
+        if dayFiveCallOk then 1 else 0,
+        if dayFivePutOk then 1 else 0,
+        MaxTriggerCandles,
+        enableFullReversalFlag).newCode,
+    0);
+
+def nightSmState = CompoundValue(1,
+    if isFuturesProfile then
+        PmzEntryMachine(
+            nightSmState[1],
+            if nightSessionOpen then 1 else 0,
+            if nightFiveMinClose then 1 else 0,
+            if nightFirstFiveSlot then 1 else 0,
+            if nightEntriesAllowed then 1 else 0,
+            if nightOneAbove then 1 else 0,
+            if nightOneBelow then 1 else 0,
+            if nightFiveAbove then 1 else 0,
+            if nightFiveBelow then 1 else 0,
+            if nightFiveInside then 1 else 0,
+            if nightCallOk then 1 else 0,
+            if nightPutOk then 1 else 0,
+            if nightFiveCallOk then 1 else 0,
+            if nightFivePutOk then 1 else 0,
+            MaxTriggerCandles,
+            enableFullReversalFlag).newCode
+    else 0,
+    0);
+
+def dayStatePrev = if IsNaN(daySmState[1]) then 0 else Floor(daySmState[1] % 10);
+def dayArmPrev = if IsNaN(daySmState[1]) then 0 else Floor(Floor(daySmState[1] / 10) % 10);
+def dayFRCall = EnableFullReversalFreshBreakout and dayStatePrev == 4 and dayFiveAbove;
+def dayFRPut = EnableFullReversalFreshBreakout and dayStatePrev == 3 and dayFiveBelow;
+def dayFirstGate = dayFiveMinClose and dayFirstFiveSlot;
+def dayCrossCall = dayFiveMinClose and dayStatePrev == 2 and dayFiveAbove and dayFiveCallOk;
+def dayCrossPut = dayFiveMinClose and dayStatePrev == 1 and dayFiveBelow and dayFivePutOk;
+def daySameCall = dayFiveMinClose and dayFiveAbove and dayFiveCallOk and
+    (dayFRCall or (dayStatePrev == 0 and dayFirstGate) or dayCrossCall);
+def daySamePut = dayFiveMinClose and dayFiveBelow and dayFivePutOk and
+    (dayFRPut or (dayStatePrev == 0 and dayFirstGate) or dayCrossPut);
+def dayCleanCall = dayEntriesAllowed and dayOneAbove and dayCallOk and (dayArmPrev == 1 or daySameCall);
+def dayCleanPut = dayEntriesAllowed and dayOneBelow and dayPutOk and (dayArmPrev == 2 or daySamePut);
+def dayPullCall = dayEntriesAllowed and dayStatePrev == 1 and dayOneAbove and dayCallOk;
+def dayPullPut = dayEntriesAllowed and dayStatePrev == 2 and dayOneBelow and dayPutOk;
+def dayCallFire = dayCleanCall or dayPullCall;
+def dayPutFire = dayCleanPut or dayPullPut;
+
+def nightStatePrev = if IsNaN(nightSmState[1]) then 0 else Floor(nightSmState[1] % 10);
+def nightArmPrev = if IsNaN(nightSmState[1]) then 0 else Floor(Floor(nightSmState[1] / 10) % 10);
+def nightFRCall = EnableFullReversalFreshBreakout and nightStatePrev == 4 and nightFiveAbove;
+def nightFRPut = EnableFullReversalFreshBreakout and nightStatePrev == 3 and nightFiveBelow;
+def nightFirstGate = nightFiveMinClose and nightFirstFiveSlot;
+def nightCrossCall = nightFiveMinClose and nightStatePrev == 2 and nightFiveAbove and nightFiveCallOk;
+def nightCrossPut = nightFiveMinClose and nightStatePrev == 1 and nightFiveBelow and nightFivePutOk;
+def nightSameCall = nightFiveMinClose and nightFiveAbove and nightFiveCallOk and
+    (nightFRCall or (nightStatePrev == 0 and nightFirstGate) or nightCrossCall);
+def nightSamePut = nightFiveMinClose and nightFiveBelow and nightFivePutOk and
+    (nightFRPut or (nightStatePrev == 0 and nightFirstGate) or nightCrossPut);
+def nightCleanCall = nightEntriesAllowed and nightOneAbove and nightCallOk and (nightArmPrev == 1 or nightSameCall);
+def nightCleanPut = nightEntriesAllowed and nightOneBelow and nightPutOk and (nightArmPrev == 2 or nightSamePut);
+def nightPullCall = nightEntriesAllowed and nightStatePrev == 1 and nightOneAbove and nightCallOk;
+def nightPullPut = nightEntriesAllowed and nightStatePrev == 2 and nightOneBelow and nightPutOk;
+def nightCallFire = nightCleanCall or nightPullCall;
+def nightPutFire = nightCleanPut or nightPullPut;
+
+def callFire = dayCallFire or nightCallFire;
+def putFire = dayPutFire or nightPutFire;
+def entriesAllowed = dayEntriesAllowed or nightEntriesAllowed;
+def state = if showNightBand then Floor(nightSmState % 10) else Floor(daySmState % 10);
+def cleanArm = if showNightBand then Floor(Floor(nightSmState / 10) % 10) else Floor(Floor(daySmState / 10) % 10);
+def triggerBudget = if showNightBand then Floor(nightSmState / 100) else Floor(daySmState / 100);
+def oneAbove = if showNightBand then nightOneAbove else dayOneAbove;
+def oneBelow = if showNightBand then nightOneBelow else dayOneBelow;
+def callDistance = if showNightBand then nightCallDist else dayCallDist;
+def putDistance = if showNightBand then nightPutDist else dayPutDist;
+def fiveInside = if showNightBand then nightFiveInside else dayFiveInside;
+def isSessionOpen = daySessionOpen or nightSessionOpen;
+def smFiveMinuteClose = (showNightBand and nightFiveMinClose) or (showDayBand and dayFiveMinClose);
+def fiveSlot = if showNightBand then nightFiveSlot else dayFiveSlot;
+
+plot DebugState = state;
+plot DebugCleanArm = cleanArm;
+plot DebugBudget = triggerBudget;
+plot DebugGateOpen = if entriesAllowed then 1 else 0;
+plot DebugOneAbove = if oneAbove then 1 else 0;
+plot DebugOneBelow = if oneBelow then 1 else 0;
+plot DebugCallDist = callDistance;
+plot DebugPutDist = putDistance;
+plot DebugIsFutures = if isFuturesProfile then 1 else 0;
+plot DebugNightFormValid = if nightFormValid then 1 else 0;
+plot DebugNightFormFrozen = if nightFormFrozen then 1 else 0;
+plot DebugPrimaryLocked = primaryValidLocked;
+plot DebugInExtension = if inExtensionForm then 1 else 0;
+plot DebugInNightDisplay = if inNightDisplay then 1 else 0;
+plot DebugFiveSlot = fiveSlot;
+plot DebugNightEntries = if nightEntriesAllowed then 1 else 0;
+plot DebugDayEntries = if dayEntriesAllowed then 1 else 0;
+plot DebugReopenKind = if isWeekdayReopen then 1 else if isWeekendReopen then 2 else if longGapReopen then 3 else 0;
+DebugState.Hide();
+DebugCleanArm.Hide();
+DebugBudget.Hide();
+DebugGateOpen.Hide();
+DebugOneAbove.Hide();
+DebugOneBelow.Hide();
+DebugCallDist.Hide();
+DebugPutDist.Hide();
+DebugIsFutures.Hide();
+DebugNightFormValid.Hide();
+DebugNightFormFrozen.Hide();
+DebugPrimaryLocked.Hide();
+DebugInExtension.Hide();
+DebugInNightDisplay.Hide();
+DebugFiveSlot.Hide();
+DebugNightEntries.Hide();
+DebugDayEntries.Hide();
+DebugReopenKind.Hide();
+
+plot CallEntryMarker = if ShowEntryMarkers and callFire then oneClose else Double.NaN;
+CallEntryMarker.SetPaintingStrategy(PaintingStrategy.ARROW_UP);
+CallEntryMarker.SetLineWeight(5);
+CallEntryMarker.SetDefaultColor(CreateColor(52, 168, 83));
+CallEntryMarker.HideBubble();
+
+plot PutEntryMarker = if ShowEntryMarkers and putFire then oneClose else Double.NaN;
+PutEntryMarker.SetPaintingStrategy(PaintingStrategy.ARROW_DOWN);
+PutEntryMarker.SetLineWeight(5);
+PutEntryMarker.SetDefaultColor(CreateColor(234, 67, 53));
+PutEntryMarker.HideBubble();
+
+def entryTimeSec = if !IsNaN(midnightEtEpoch) then Floor((nowEpoch - midnightEtEpoch) / 1000) else Double.NaN;
+AddChartBubble(
+    ShowEntryMarkers and callFire and !IsNaN(entryTimeSec),
+    oneClose,
+    "CALL " +
+    AsText(
+        Floor(entryTimeSec / 3600) + Floor((entryTimeSec % 3600) / 60) / 100,
+        NumberFormat.TWO_DECIMAL_PLACES) + " ET",
+    CreateColor(52, 168, 83),
+    yes);
+AddChartBubble(
+    ShowEntryMarkers and putFire and !IsNaN(entryTimeSec),
+    oneClose,
+    "PUT " +
+    AsText(
+        Floor(entryTimeSec / 3600) + Floor((entryTimeSec % 3600) / 60) / 100,
+        NumberFormat.TWO_DECIMAL_PLACES) + " ET",
+    CreateColor(234, 67, 53),
+    no);
+
+def neutralAtOpen = isSessionOpen;
+def neutralOnFiveInside = smFiveMinuteClose and fiveInside and entriesAllowed;
+AddVerticalLine(ShowNeutralLines and neutralAtOpen, "Neutral", CreateColor(161, 66, 244), Curve.SHORT_DASH);
+AddVerticalLine(ShowNeutralLines and neutralOnFiveInside, "Neutral", CreateColor(161, 66, 244), Curve.SHORT_DASH);
+
+def sessionTag = if showNightBand then "NIGHT " else if showDayBand then "DAY " else "";
+AddLabel(
+    ShowStatusStrip,
+    sessionTag +
+    "PMZ Low: " + AsText(pmzLow, NumberFormat.TWO_DECIMAL_PLACES),
+    Color.RED,
+    location = Location.TOP_LEFT,
+    size = FontSize.LARGE);
+AddLabel(
+    ShowStatusStrip,
+    "PMZ High: " + AsText(pmzHigh, NumberFormat.TWO_DECIMAL_PLACES),
+    Color.CYAN,
+    location = Location.TOP_LEFT,
+    size = FontSize.LARGE);
+AddLabel(
+    ShowStatusStrip,
+    "+/-" + AsText(MaxDistanceOutsidePmzPoints, NumberFormat.TWO_DECIMAL_PLACES) +
+    " gate  Call " + AsText(callGateCeiling, NumberFormat.TWO_DECIMAL_PLACES) +
+    "  Put " + AsText(putGateFloor, NumberFormat.TWO_DECIMAL_PLACES),
+    Color.YELLOW,
+    location = Location.TOP_LEFT,
+    size = FontSize.LARGE);
+AddLabel(
+    ShowStatusStrip and (callFire or putFire),
+    if callFire then "ENTRY CALL" else "ENTRY PUT",
+    if callFire then Color.LIME else Color.ORANGE,
+    location = Location.TOP_LEFT,
+    size = FontSize.X_LARGE);
+AddLabel(
+    ShowStatusStrip,
+    "1m " +
+    (if IsNaN(pmzHigh) or IsNaN(pmzLow) then "PMZ n/a"
+    else if oneAbove then "Above PMZ"
+    else if oneBelow then "Below PMZ"
+    else "Inside PMZ") +
+    " | Arm " +
+    (if cleanArm == 1 then "Call"
+    else if cleanArm == 2 then "Put"
+    else "None") +
+    " | Dist " +
+    AsText(callDistance, NumberFormat.TWO_DECIMAL_PLACES) + "/" +
+    AsText(putDistance, NumberFormat.TWO_DECIMAL_PLACES),
+    Color.LIME,
+    location = Location.TOP_LEFT,
+    size = FontSize.MEDIUM);
+
+def bannerActive = Banner;
+AddLabel(Banner,
+    "Auto: " + (if isFuturesProfile then "FUTURES (day+night)" else "EQUITY (day only)") +
+    " | " + (if showNightBand then "session NIGHT" else if showDayBand then "session DAY" else "session off") +
+    (if isFuturesProfile and nightExtensionPath then " | night form: extension"
+     else if isFuturesProfile and nightFormValid then " | night form: primary" else ""),
+    if isFuturesProfile then Color.MAGENTA else Color.WHITE);
+
+AddLabel(bannerActive,
+    "LIS: " + AsText(LIS, NumberFormat.TWO_DECIMAL_PLACES) +
+    " | RTH Open: " + AsText(otime, NumberFormat.TWO_DECIMAL_PLACES) +
+    " | Gap: " + AsText(gapAmount, NumberFormat.TWO_DECIMAL_PLACES) +
+    (if gap == 1 then " (UP)" else " (DOWN/FLAT)"),
+    if gap == 1 then Color.GREEN else Color.RED);
+
+AddLabel(bannerActive and showDayBand,
+    "PMH Time: " +
+    (if IsNaN(pmhTimeSec) then "n/a" else
+        AsText(
+            Floor(pmhTimeSec / 3600) + Floor((pmhTimeSec % 3600) / 60) / 100,
+            NumberFormat.TWO_DECIMAL_PLACES) + " ET") +
+    " | PML Time: " +
+    (if IsNaN(pmlTimeSec) then "n/a" else
+        AsText(
+            Floor(pmlTimeSec / 3600) + Floor((pmlTimeSec % 3600) / 60) / 100,
+            NumberFormat.TWO_DECIMAL_PLACES) + " ET"),
+    Color.CYAN);
+
+AddLabel(bannerActive,
+    (if AdjustPMZ then "PMZ High (Adj): " else "PMZ High: ") +
+    AsText(pmzHigh, NumberFormat.TWO_DECIMAL_PLACES),
+    Color.GREEN);
+
+AddLabel(bannerActive,
+    (if AdjustPMZ then "PMZ Low (Adj): " else "PMZ Low: ") +
+    AsText(pmzLow, NumberFormat.TWO_DECIMAL_PLACES),
+    Color.RED);
+
+AddLabel(bannerActive,
+    (if AdjustPMZ then "Risk (Adj): " else "Risk: ") + AsText(adjusted_risk, NumberFormat.TWO_DECIMAL_PLACES) +
+    " | Clamp: " + AsText(MinPmzWidthPoints, NumberFormat.TWO_DECIMAL_PLACES) +
+    "-" + AsText(MaxPmzWidthPoints, NumberFormat.TWO_DECIMAL_PLACES) +
+    " | MaxDist: " + AsText(MaxDistanceOutsidePmzPoints, NumberFormat.TWO_DECIMAL_PLACES) +
+    " | Gate: " + (if showNightBand then
+        (if nightExtensionPath and nightFormExtensionMinutesClamped > 0 then "N freeze/ext end" else "N reopen+5m")
+        else "" + EntryGateTimeET),
+    Color.YELLOW);
+
+AddLabel(bannerActive and AdjustPMZ,
+    "Orig High: " + AsText(rawHighForOriginal, NumberFormat.TWO_DECIMAL_PLACES) +
+    " | Orig Low: " + AsText(rawLowForOriginal, NumberFormat.TWO_DECIMAL_PLACES) +
+    " | Orig Risk: " + AsText(original_pmz_risk, NumberFormat.TWO_DECIMAL_PLACES),
+    Color.GRAY);
+
+AddLabel(bannerActive and !clampInputsValid,
+    "WARNING: MinPmzWidthPoints > MaxPmzWidthPoints — clamp disabled.",
+    Color.MAGENTA);
+
+AddLabel(bannerActive,
+    "State: " +
+    (if state == 0 then "InPMZ_NoPullback"
+    else if state == 1 then "InPMZ_CallPullback"
+    else if state == 2 then "InPMZ_PutPullback"
+    else if state == 3 then "OutsidePmz(Call)"
+    else "OutsidePmz(Put)") +
+    " | CleanArm: " +
+    (if cleanArm == 1 then "Call"
+    else if cleanArm == 2 then "Put"
+    else "None") +
+    " | Budget: " + triggerBudget,
+    Color.WHITE);
+
+def chartIsOneMinute = GetAggregationPeriod() == AggregationPeriod.MIN;
+AddLabel(Banner and !chartIsOneMinute,
+    "WARNING: Use a 1-minute /ES continuous chart. Current aggregation is not 1-minute.",
+    Color.MAGENTA);
+
+AddLabel(Banner and NightMode and !nightFormValid and inNightDisplay,
+    "WARNING: Night PMZ form invalid (no usable H/L). No night entries.",
+    Color.MAGENTA);
+
+AddLabel(bannerActive,
+    "1m: " +
+    (if oneAbove then "Above PMZ"
+    else if oneBelow then "Below PMZ"
+    else if IsNaN(pmzHigh) or IsNaN(pmzLow) then "PMZ n/a"
+    else "Inside PMZ") +
+    " | Gate: " + (if entriesAllowed then "Open" else "Closed") +
+    " | Dist C/P: " +
+    AsText(callDistance, NumberFormat.TWO_DECIMAL_PLACES) + "/" +
+    AsText(putDistance, NumberFormat.TWO_DECIMAL_PLACES) +
+    (if callFire or putFire then " | ENTRY NOW" else ""),
+    if callFire then Color.GREEN else if putFire then Color.RED else Color.ORANGE);

@@ -893,7 +893,7 @@ AddLabel(Banner and !chartIsOneMinute,
     "WARNING: Use a 1-minute /ES continuous chart. Current aggregation is not 1-minute.",
     Color.MAGENTA);
 
-AddLabel(Banner and NightMode and !nightFormValid and inNightDisplay,
+AddLabel(Banner and isFuturesProfile and !nightFormValid and inNightDisplay,
     "WARNING: Night PMZ form invalid (no usable H/L). No night entries.",
     Color.MAGENTA);
 

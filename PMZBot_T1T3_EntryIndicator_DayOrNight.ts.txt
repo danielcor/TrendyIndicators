@@ -48,6 +48,14 @@ input ShowDistanceChartStyle = yes;
 #hint ShowDistanceChartStyle: Match the /distance chart: PMZ band, +/- distance gate, admit slivers, triangles.
 input ShowEntryMarkers = yes;
 #hint ShowEntryMarkers: Green/red triangles at the 1-minute close on entry fires. Requires a 1-minute /ES chart.
+input ShowProfitTargets = yes;
+#hint ShowProfitTargets: Small circles at the entry bar marking 3 configurable profit-target price levels.
+input ProfitTarget1Points = 5.0;
+#hint ProfitTarget1Points: Points added (CALL) or subtracted (PUT) from the entry close for target 1.
+input ProfitTarget2Points = 10.0;
+#hint ProfitTarget2Points: Points added (CALL) or subtracted (PUT) from the entry close for target 2.
+input ProfitTarget3Points = 15.0;
+#hint ProfitTarget3Points: Points added (CALL) or subtracted (PUT) from the entry close for target 3.
 input ShowNeutralLines = yes;
 #hint ShowNeutralLines: Dotted vertical lines when neutral is asserted (session open, 5-min inside PMZ).
 input AdjustPMZ = yes;
@@ -780,6 +788,45 @@ PutEntryMarker.SetPaintingStrategy(PaintingStrategy.ARROW_DOWN);
 PutEntryMarker.SetLineWeight(5);
 PutEntryMarker.SetDefaultColor(CreateColor(234, 67, 53));
 PutEntryMarker.HideBubble();
+
+# Profit-target circles: 3 configurable point increments from the entry close, entry bar only.
+# Split into Call/Put plot pairs (fixed SetDefaultColor) rather than one shared plot with
+# AssignValueColor — matches the CallEntryMarker/PutEntryMarker pattern that reliably renders.
+plot ProfitTarget1Call = if ShowProfitTargets and callFire then oneClose + ProfitTarget1Points else Double.NaN;
+ProfitTarget1Call.SetPaintingStrategy(PaintingStrategy.POINTS);
+ProfitTarget1Call.SetLineWeight(5);
+ProfitTarget1Call.SetDefaultColor(CreateColor(52, 168, 83));
+ProfitTarget1Call.HideBubble();
+
+plot ProfitTarget1Put = if ShowProfitTargets and putFire then oneClose - ProfitTarget1Points else Double.NaN;
+ProfitTarget1Put.SetPaintingStrategy(PaintingStrategy.POINTS);
+ProfitTarget1Put.SetLineWeight(5);
+ProfitTarget1Put.SetDefaultColor(CreateColor(234, 67, 53));
+ProfitTarget1Put.HideBubble();
+
+plot ProfitTarget2Call = if ShowProfitTargets and callFire then oneClose + ProfitTarget2Points else Double.NaN;
+ProfitTarget2Call.SetPaintingStrategy(PaintingStrategy.POINTS);
+ProfitTarget2Call.SetLineWeight(5);
+ProfitTarget2Call.SetDefaultColor(CreateColor(52, 168, 83));
+ProfitTarget2Call.HideBubble();
+
+plot ProfitTarget2Put = if ShowProfitTargets and putFire then oneClose - ProfitTarget2Points else Double.NaN;
+ProfitTarget2Put.SetPaintingStrategy(PaintingStrategy.POINTS);
+ProfitTarget2Put.SetLineWeight(5);
+ProfitTarget2Put.SetDefaultColor(CreateColor(234, 67, 53));
+ProfitTarget2Put.HideBubble();
+
+plot ProfitTarget3Call = if ShowProfitTargets and callFire then oneClose + ProfitTarget3Points else Double.NaN;
+ProfitTarget3Call.SetPaintingStrategy(PaintingStrategy.POINTS);
+ProfitTarget3Call.SetLineWeight(5);
+ProfitTarget3Call.SetDefaultColor(CreateColor(52, 168, 83));
+ProfitTarget3Call.HideBubble();
+
+plot ProfitTarget3Put = if ShowProfitTargets and putFire then oneClose - ProfitTarget3Points else Double.NaN;
+ProfitTarget3Put.SetPaintingStrategy(PaintingStrategy.POINTS);
+ProfitTarget3Put.SetLineWeight(5);
+ProfitTarget3Put.SetDefaultColor(CreateColor(234, 67, 53));
+ProfitTarget3Put.HideBubble();
 
 def entryTimeSec = if !IsNaN(midnightEtEpoch) then Floor((nowEpoch - midnightEtEpoch) / 1000) else Double.NaN;
 AddChartBubble(

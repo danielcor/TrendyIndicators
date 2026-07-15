@@ -1,7 +1,7 @@
 ##
 # PMZBot T1+T2+T3 Entry Indicator — Auto (day AND night, no mode flags)
 # File: PMZBot_T1T3_EntryIndicator_Auto.ts.txt
-# TEST BUILD: 2026-07-14 10:30:40 EDT — /ES /NQ /RTY /YM CME index profiles
+# RC BUILD: 2026-07-15 14:35:29 EDT (v2026.07.15-rc1) — /ES /NQ /RTY /YM CME index profiles
 # Purpose: Concurrent day + night sessions by clock. Futures vs equity inferred from GetSymbol().
 #   Supported CME index futures (/ES, /NQ, /RTY, /YM): day cash entries + Globex night entries.
 #   Equity (e.g. SPY, AAPL): day cash entries only.
@@ -43,6 +43,14 @@ input ShowDistanceChartStyle = yes;
 #hint ShowDistanceChartStyle: Match the /distance chart: PMZ band, +/- distance gate, admit slivers, triangles.
 input ShowEntryMarkers = yes;
 #hint ShowEntryMarkers: Green/red triangles at the 1-minute close on entry fires. Requires a 1-minute supported CME index-futures chart.
+input ShowProfitTargets = yes;
+#hint ShowProfitTargets: Small circles at the entry bar marking 3 configurable profit-target price levels.
+input ProfitTarget1Points = 5.0;
+#hint ProfitTarget1Points: Points added (CALL) or subtracted (PUT) from the entry close for target 1.
+input ProfitTarget2Points = 10.0;
+#hint ProfitTarget2Points: Points added (CALL) or subtracted (PUT) from the entry close for target 2.
+input ProfitTarget3Points = 15.0;
+#hint ProfitTarget3Points: Points added (CALL) or subtracted (PUT) from the entry close for target 3.
 input EntryLabelTimeZone = {default ET, CT, MT, PT, AKT, HT};
 #hint EntryLabelTimeZone: Time zone used only for entry-bubble timestamps. Choose your local US zone; session logic remains time-zone independent.
 input ShowNeutralLines = yes;
@@ -830,8 +838,13 @@ def nightPullPut = nightEntriesAllowed and nightStatePrev == 2 and nightOneBelow
 def nightCallFire = nightCleanCall or nightPullCall;
 def nightPutFire = nightCleanPut or nightPullPut;
 
-def callFire = dayCallFire or nightCallFire;
-def putFire = dayPutFire or nightPutFire;
+# NaN-guard each session fire before combining: outside its own session a stream's fire is NaN
+# (PMZ inputs undefined), and thinkScript or does not short-circuit, so an unguarded
+# "dayCallFire or nightCallFire" is NaN on every bar and nothing gated on it ever renders.
+def callFire = (if IsNaN(dayCallFire) then 0 else dayCallFire) or
+    (if IsNaN(nightCallFire) then 0 else nightCallFire);
+def putFire = (if IsNaN(dayPutFire) then 0 else dayPutFire) or
+    (if IsNaN(nightPutFire) then 0 else nightPutFire);
 def entriesAllowed = dayEntriesAllowed or nightEntriesAllowed;
 
 def state = if showNightBand then Floor(nightSmState % 10) else Floor(daySmState % 10);
@@ -914,6 +927,45 @@ PutEntryMarker.SetLineWeight(5);
 PutEntryMarker.SetDefaultColor(CreateColor(234, 67, 53));
 PutEntryMarker.HideBubble();
 
+# Profit-target circles: 3 configurable point increments from the entry close, entry bar only.
+# Split into Call/Put plot pairs (fixed SetDefaultColor) rather than one shared plot with
+# AssignValueColor — matches the CallEntryMarker/PutEntryMarker pattern that reliably renders.
+plot ProfitTarget1Call = if ShowProfitTargets and callFire then oneClose + ProfitTarget1Points else Double.NaN;
+ProfitTarget1Call.SetPaintingStrategy(PaintingStrategy.POINTS);
+ProfitTarget1Call.SetLineWeight(5);
+ProfitTarget1Call.SetDefaultColor(CreateColor(52, 168, 83));
+ProfitTarget1Call.HideBubble();
+
+plot ProfitTarget1Put = if ShowProfitTargets and putFire then oneClose - ProfitTarget1Points else Double.NaN;
+ProfitTarget1Put.SetPaintingStrategy(PaintingStrategy.POINTS);
+ProfitTarget1Put.SetLineWeight(5);
+ProfitTarget1Put.SetDefaultColor(CreateColor(234, 67, 53));
+ProfitTarget1Put.HideBubble();
+
+plot ProfitTarget2Call = if ShowProfitTargets and callFire then oneClose + ProfitTarget2Points else Double.NaN;
+ProfitTarget2Call.SetPaintingStrategy(PaintingStrategy.POINTS);
+ProfitTarget2Call.SetLineWeight(5);
+ProfitTarget2Call.SetDefaultColor(CreateColor(52, 168, 83));
+ProfitTarget2Call.HideBubble();
+
+plot ProfitTarget2Put = if ShowProfitTargets and putFire then oneClose - ProfitTarget2Points else Double.NaN;
+ProfitTarget2Put.SetPaintingStrategy(PaintingStrategy.POINTS);
+ProfitTarget2Put.SetLineWeight(5);
+ProfitTarget2Put.SetDefaultColor(CreateColor(234, 67, 53));
+ProfitTarget2Put.HideBubble();
+
+plot ProfitTarget3Call = if ShowProfitTargets and callFire then oneClose + ProfitTarget3Points else Double.NaN;
+ProfitTarget3Call.SetPaintingStrategy(PaintingStrategy.POINTS);
+ProfitTarget3Call.SetLineWeight(5);
+ProfitTarget3Call.SetDefaultColor(CreateColor(52, 168, 83));
+ProfitTarget3Call.HideBubble();
+
+plot ProfitTarget3Put = if ShowProfitTargets and putFire then oneClose - ProfitTarget3Points else Double.NaN;
+ProfitTarget3Put.SetPaintingStrategy(PaintingStrategy.POINTS);
+ProfitTarget3Put.SetLineWeight(5);
+ProfitTarget3Put.SetDefaultColor(CreateColor(234, 67, 53));
+ProfitTarget3Put.HideBubble();
+
 # Session-specific marker streams keep historical day and night entry events
 # independently renderable, matching the separate PMZ-band streams above.
 plot DayCallEntryMarker = if ShowEntryMarkers and dayCallFire then oneClose else Double.NaN;
@@ -972,54 +1024,46 @@ AddVerticalLine(ShowNeutralLines and neutralAtOpen, "Neutral", CreateColor(161, 
 AddVerticalLine(ShowNeutralLines and neutralOnFiveInside, "Neutral", CreateColor(161, 66, 244), Curve.SHORT_DASH);
 
 AddLabel(ShowBuildStamp,
-    "AUTO BUILD 2026-07-14 10:30:40 EDT | /ES /NQ /RTY /YM CME index profiles",
+    "AUTO RC 2026-07-15 14:35:29 EDT rc1 | /ES /NQ /RTY /YM CME index profiles",
     Color.WHITE,
     location = Location.TOP_RIGHT,
     size = FontSize.SMALL);
 
+# Status strip trimmed to compact PMZ High/Low only; gate, state, and ENTRY flash labels
+# removed in favor of the latched live-entry label below.
 AddLabel(
     ShowStatusStrip,
     (if showNightBand then "NIGHT " else if showDayBand then "DAY " else "") +
     "PMZ Low: " + AsText(pmzLow, NumberFormat.TWO_DECIMAL_PLACES),
     Color.RED,
     location = Location.TOP_LEFT,
-    size = FontSize.LARGE);
+    size = FontSize.SMALL);
 AddLabel(
     ShowStatusStrip,
     "PMZ High: " + AsText(pmzHigh, NumberFormat.TWO_DECIMAL_PLACES),
     Color.CYAN,
     location = Location.TOP_LEFT,
-    size = FontSize.LARGE);
-AddLabel(
-    ShowStatusStrip,
-    "+/-" + AsText(MaxDistanceOutsidePmzPoints, NumberFormat.TWO_DECIMAL_PLACES) +
-    " gate  Call " + AsText(callGateCeiling, NumberFormat.TWO_DECIMAL_PLACES) +
-    "  Put " + AsText(putGateFloor, NumberFormat.TWO_DECIMAL_PLACES),
-    Color.YELLOW,
-    location = Location.TOP_LEFT,
-    size = FontSize.LARGE);
-AddLabel(
-    ShowStatusStrip and (callFire or putFire),
-    if callFire then "ENTRY CALL" else "ENTRY PUT",
-    if callFire then Color.LIME else Color.ORANGE,
-    location = Location.TOP_LEFT,
-    size = FontSize.X_LARGE);
-AddLabel(
-    ShowStatusStrip,
-    "1m " +
-    (if IsNaN(pmzHigh) or IsNaN(pmzLow) then "PMZ n/a"
-    else if oneAbove then "Above PMZ"
-    else if oneBelow then "Below PMZ"
-    else "Inside PMZ") +
-    " | Arm " +
-    (if cleanArm == 1 then "Call"
-    else if cleanArm == 2 then "Put"
-    else "None") +
-    (if neutralGate == 1 then " | N" else "") +
-    " | Dist " +
-    AsText(callDistance, NumberFormat.TWO_DECIMAL_PLACES) + "/" +
-    AsText(putDistance, NumberFormat.TWO_DECIMAL_PLACES),
-    Color.LIME,
+    size = FontSize.SMALL);
+
+# Live-entry label: latches the most recent entry fire, so exactly one is shown at a time
+# and it always represents the latest ("live") entry. Displays entry time, side, the
+# symbol level at entry, and the three profit-target levels.
+def entryEventNow = callFire or putFire;
+def hasEntry = CompoundValue(1, if entryEventNow then 1 else hasEntry[1], 0);
+def lastEntryIsBuy = CompoundValue(1, if callFire then 1 else if putFire then 0 else lastEntryIsBuy[1], 0);
+def lastEntryPrice = CompoundValue(1, if entryEventNow then oneClose else lastEntryPrice[1], Double.NaN);
+def lastEntryHour = CompoundValue(1, if entryEventNow then entryLabelHour else lastEntryHour[1], 0);
+def lastEntryMinute = CompoundValue(1, if entryEventNow then entryLabelMinute else lastEntryMinute[1], 0);
+def lastEntryTpSign = if lastEntryIsBuy then 1 else -1;
+AddLabel(ShowStatusStrip and hasEntry,
+    (if lastEntryIsBuy then "BUY " else "SELL ") +
+    lastEntryHour + ":" + (if lastEntryMinute < 10 then "0" else "") + lastEntryMinute +
+    (if EntryLabelTimeZone == EntryLabelTimeZone.CT then " CT" else if EntryLabelTimeZone == EntryLabelTimeZone.MT then " MT" else if EntryLabelTimeZone == EntryLabelTimeZone.PT then " PT" else if EntryLabelTimeZone == EntryLabelTimeZone.AKT then " AKT" else if EntryLabelTimeZone == EntryLabelTimeZone.HT then " HT" else " ET") +
+    " @ " + AsText(lastEntryPrice, NumberFormat.TWO_DECIMAL_PLACES) +
+    " | TP " + AsText(lastEntryPrice + lastEntryTpSign * ProfitTarget1Points, NumberFormat.TWO_DECIMAL_PLACES) +
+    " / " + AsText(lastEntryPrice + lastEntryTpSign * ProfitTarget2Points, NumberFormat.TWO_DECIMAL_PLACES) +
+    " / " + AsText(lastEntryPrice + lastEntryTpSign * ProfitTarget3Points, NumberFormat.TWO_DECIMAL_PLACES),
+    if lastEntryIsBuy then CreateColor(52, 168, 83) else CreateColor(234, 67, 53),
     location = Location.TOP_LEFT,
     size = FontSize.MEDIUM);
 

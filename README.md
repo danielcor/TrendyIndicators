@@ -14,6 +14,29 @@ PMZBot-style entry state machine (entries only; bot does not need to be running)
 | `PMZBot_T1T3_EntryIndicator_DayOrNight.ts.txt` | **Day *or* night** via `NightMode` / `futures` flags (not both at once) |
 | `PMZBot_T1T3_EntryIndicator_Auto.ts.txt` | **Day *and* night** auto: futures (symbol has `/`) get both sessions; equities day-only. No NightMode/PRE/futures flags. |
 
+## Entry markers & profit targets
+
+All 4 study files share the same entry-marker inputs:
+
+- `ShowEntryMarkers` (default yes): green/red triangle at the 1-minute close when a CALL/PUT
+  entry fires.
+- `ShowProfitTargets` (default yes): 3 small circles at the entry bar only, at
+  `entry close ± ProfitTarget1/2/3Points` — green for CALL, red for PUT. Static reference
+  levels, not live "target hit" tracking or exits. Implemented as separate
+  `ProfitTarget1/2/3Call` and `ProfitTarget1/2/3Put` plots (6 per study) with fixed colors —
+  a single shared plot colored via `AssignValueColor` was unreliable for sparse POINTS plots.
+- `ProfitTarget1Points` / `ProfitTarget2Points` / `ProfitTarget3Points` (defaults 5 / 10 / 15):
+  configurable point deltas from the entry close for each target circle.
+
+The Auto study additionally shows a latched **live-entry label** (top-left, under the compact
+PMZ High/Low labels): exactly one at a time, always the most recent entry — `BUY/SELL HH:MM TZ
+@ level | TP t1 / t2 / t3`, green for BUY, red for SELL. Gated by `ShowStatusStrip`.
+
+Note (Auto study): the combined `callFire`/`putFire` gates NaN-guard each session stream before
+`or`-combining. Outside its own session a stream's fire signal is NaN, and thinkScript `or`
+does not short-circuit — unguarded, the combined gate is NaN on every bar and anything gated
+on it silently never renders.
+
 ## Day only
 
 - Premarket PMZ (≈07:25–09:30), 5–8 pt width clamp (hardcoded in day study), entry gate 09:35.

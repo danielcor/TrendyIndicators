@@ -1,15 +1,18 @@
 ##
 # PMZBot T1+T2+T3 Entry Indicator — Auto (day AND night, no mode flags)
 # File: PMZBot_T1T3_EntryIndicator_Auto.ts.txt
+# TEST BUILD: 2026-07-14 10:30:40 EDT — /ES /NQ /RTY /YM CME index profiles
 # Purpose: Concurrent day + night sessions by clock. Futures vs equity inferred from GetSymbol().
-#   Futures (TOS continuous typically contain "/"): day cash entries + Globex night entries.
+#   Supported CME index futures (/ES, /NQ, /RTY, /YM): day cash entries + Globex night entries.
 #   Equity (e.g. SPY, AAPL): day cash entries only.
 # No NightMode / Premarket / futures inputs. Clamp min/max still user-adjustable.
 # Scope: entries only. No exits, slot occupancy, cooldown/de-dupe, active-trade caps, or consolidation pause.
 # 2026-07-13: Type A from-neutral, Type C same-bar one-shot, same-side took latch (T1–T3; not T5).
+# 2026-07-13: boundary five OHLC uses completed prior five (fiveClose[1]) so 5-min-inside
+# neutral matches bot (e.g. 10:40 close inside PMZ).
 # Import: TOS Studies -> Edit Studies -> Create -> paste; 1-minute chart with extended hours.
-# TOS continuous /ES and the TOS LIS definition below are the canonical chart reference.
-# Lines must overlay the price axis. If PMZ/gate lines do not align with the ES scale, edit the
+# TOS continuous CME equity-index futures and the TOS LIS definition below are the canonical chart reference.
+# Lines must overlay the price axis. If PMZ/gate lines do not align with the chart scale, edit the
 # study on the chart -> gear icon -> make sure it is on the price subgraph (not a lower panel).
 #
 # Tr3ndy PMZ - https://www.trendytrading.co/scripts/script-shop#PMZ
@@ -31,9 +34,7 @@ declare once_per_bar;
 plot ScaleAnchor = close;
 ScaleAnchor.Hide();
 
-# Profile from ticker: TOS continuous futures usually include "/" (e.g. /ES:XCME). Equities do not.
-def isFuturesProfile = GetSymbol() matches "/*";
-
+# ThinkScript requires all input statements before study-level defs.
 input Banner = no;
 #hint Banner: Debug labels (PMZ state, distance, gate). Off by default; distance-chart mode is visual.
 input ShowStatusStrip = yes;
@@ -41,7 +42,9 @@ input ShowStatusStrip = yes;
 input ShowDistanceChartStyle = yes;
 #hint ShowDistanceChartStyle: Match the /distance chart: PMZ band, +/- distance gate, admit slivers, triangles.
 input ShowEntryMarkers = yes;
-#hint ShowEntryMarkers: Green/red triangles at the 1-minute close on entry fires. Requires a 1-minute /ES chart.
+#hint ShowEntryMarkers: Green/red triangles at the 1-minute close on entry fires. Requires a 1-minute supported CME index-futures chart.
+input EntryLabelTimeZone = {default ET, CT, MT, PT, AKT, HT};
+#hint EntryLabelTimeZone: Time zone used only for entry-bubble timestamps. Choose your local US zone; session logic remains time-zone independent.
 input ShowNeutralLines = yes;
 #hint ShowNeutralLines: Dotted vertical lines when neutral is asserted (session open, 5-min inside PMZ).
 input AdjustPMZ = yes;
@@ -64,6 +67,16 @@ input EntryGateTimeET = 0935;
 #hint EntryGateTimeET: Day mode only — HHmm offset from cash RegularTradingStart (0935 = +5 minutes). Not platform clock.
 input NightFormExtensionMinutes = 60;
 #hint NightFormExtensionMinutes: If classic 15:55-18:00 form has no valid H/L (e.g. Sunday), form from Globex reopen for this many minutes (clamped 0-240).
+input ShowBuildStamp = yes;
+#hint ShowBuildStamp: Shows the exact Auto study build currently loaded on the chart.
+
+# Profile from ticker: the four CME equity-index continuous symbols share the
+# ES cash-session / Globex calendar used by this study.
+# ThinkScript supports string equality here; it does not support regex-style `matches`.
+def isFuturesProfile = GetSymbol() == "/ES:XCME" or
+    GetSymbol() == "/NQ:XCME" or
+    GetSymbol() == "/RTY:XCME" or
+    GetSymbol() == "/YM:XCME";
 
 def period = if GetAggregationPeriod() <= AggregationPeriod.FIVE_MIN then
     AggregationPeriod.FIVE_MIN
@@ -75,9 +88,7 @@ def l = low(period = period);
 def o = open(period = period);
 
 # -----------------------------------------------------------------------------
-# Cash RTH anchors (absolute epoch ms). On /ES these are cash 09:30-16:00 style
-# boundaries, NOT Globex 18:00-17:00. Night epochs are DERIVED as fixed offsets
-# from these so the study is independent of platform display timezone.
+# Futures-session anchors are retained for the night-form lifecycle below.
 # -----------------------------------------------------------------------------
 def rthStartEpoch = RegularTradingStart(GetYYYYMMDD());
 def rthEndEpoch = RegularTradingEnd(GetYYYYMMDD());
@@ -86,24 +97,54 @@ def minuteMs = 60 * 1000;
 def hourMs = 60 * minuteMs;
 def dayMs = 24 * hourMs;
 
+# Day path: direct parity with PMZBot_T1T3_EntryIndicator_Day.ts.txt.
+# RegularTradingStart/End are absolute exchange-session epochs, so this remains
+# independent of the chart's displayed timezone.
+def midnightEtEpoch = rthStartEpoch - (9 * 60 + 30) * minuteMs;
 def entryGateMinutesSinceMidnight = Floor(EntryGateTimeET / 100) * 60 + EntryGateTimeET % 100;
-def dayEntryGateEpoch = if !IsNaN(rthStartEpoch) then
-    rthStartEpoch + (entryGateMinutesSinceMidnight - (9 * 60 + 30)) * minuteMs
-    else Double.NaN;
-def premarketStartEpoch = if !IsNaN(rthStartEpoch) then rthStartEpoch - 125 * minuteMs else Double.NaN;
-def premarketResetEpoch = if !IsNaN(rthEndEpoch) then rthEndEpoch - 5 * minuteMs else Double.NaN;
-def lisResetEpoch = rthEndEpoch;
+def dayEntryGateEpoch = rthStartEpoch + (entryGateMinutesSinceMidnight - (9 * 60 + 30)) * minuteMs;
+def dayPremarketStartEpoch = rthStartEpoch - 125 * minuteMs;
+def dayPremarketResetEpoch = rthEndEpoch - 5 * minuteMs;
+def dayLisResetEpoch = rthEndEpoch;
+def dayEpochWindow = nowEpoch >= rthStartEpoch and nowEpoch < dayPremarketResetEpoch;
+# Compatibility fallback for supported CME index-futures charts whose RTH epoch does not map to
+# the SPX cash window. SecondsFromTime is TOS Eastern time, not chart display time.
+def dayClockSecondsFromOpen = SecondsFromTime(0930);
+def dayClockWindow = dayClockSecondsFromOpen >= 0 and SecondsFromTime(1555) < 0;
+def dayClockOpenPulse = SecondsTillTime(0930) == 0;
+def dayClockEntryWindow = SecondsFromTime(EntryGateTimeET) >= 0 and SecondsFromTime(1555) < 0;
+def dayClockPremarket = SecondsFromTime(0725) > 0 and SecondsFromTime(0930) < 0;
+def dayClockResetPulse = SecondsTillTime(1555) == 0;
+def dayClockClosePulse = SecondsTillTime(1600) == 0;
+def dayEpochOpenPulse = !IsNaN(rthStartEpoch) and nowEpoch >= rthStartEpoch and
+    (IsNaN(nowEpoch[1]) or nowEpoch[1] < rthStartEpoch);
+def dayEpochResetPulse = nowEpoch >= dayPremarketResetEpoch and nowEpoch[1] < dayPremarketResetEpoch;
+def dayEpochClosePulse = nowEpoch >= dayLisResetEpoch and nowEpoch[1] < dayLisResetEpoch;
+# Day PMZ/state/entry timing must remain bit-for-bit aligned with the working
+# day-only study. Separate plot streams solve the historical rendering issue;
+# do not change the state machine's epoch-driven timing for futures.
+def dayUseCashClock = no;
+def inCashRth = if dayUseCashClock then dayClockWindow else dayEpochWindow;
+def dayOpenPulse = if dayUseCashClock then dayClockOpenPulse else dayEpochOpenPulse;
+def dayLisClosePulse = if dayUseCashClock then dayClockClosePulse else dayEpochClosePulse;
+def dayResetPulse = if dayUseCashClock then dayClockResetPulse else dayEpochResetPulse;
+# Day entries stop at 15:55, but the final valid day PMZ remains useful until
+# the 17:00 ES maintenance break. This is display-only; it does not extend the
+# entry state machine or day entry gate.
+def dayClockVisualWindow = SecondsFromTime(0930) >= 0 and SecondsFromTime(1700) < 0;
+def dayEpochVisualWindow = nowEpoch >= rthStartEpoch and nowEpoch < rthEndEpoch + hourMs;
+def dayVisualWindow = if dayUseCashClock then dayClockVisualWindow else dayEpochVisualWindow;
 
-# Cash RTH window used for blank-when-NightMode and day band.
-def inCashRth = !IsNaN(rthStartEpoch) and !IsNaN(premarketResetEpoch) and
-    nowEpoch >= rthStartEpoch and nowEpoch < premarketResetEpoch;
-def isCashOpenPulse = !IsNaN(rthStartEpoch) and nowEpoch >= rthStartEpoch and
+# Keep the proven futures-session reset pulse isolated from the independently
+# derived day clock. In particular, do not clear Friday's night anchor at the
+# synthetic Sunday 09:30 cash clock before the Sunday 18:00 reopen.
+def nightSessionResetPulse = !IsNaN(rthStartEpoch) and nowEpoch >= rthStartEpoch and
     (IsNaN(nowEpoch[1]) or nowEpoch[1] < rthStartEpoch);
 
 # Carry last known cash close for the active night session only.
 # Latch at form start (cash close - 5m); clear at next cash open so mid-day does not keep Friday's base.
 def lastRthEndEpoch = CompoundValue(1,
-    if isCashOpenPulse then Double.NaN
+    if nightSessionResetPulse then Double.NaN
     else if !IsNaN(rthEndEpoch) and nowEpoch >= (rthEndEpoch - 5 * minuteMs) then rthEndEpoch
     else if !IsNaN(lastRthEndEpoch[1]) then lastRthEndEpoch[1]
     else Double.NaN,
@@ -111,10 +152,6 @@ def lastRthEndEpoch = CompoundValue(1,
 
 # Midnight anchor for bubble clock labels. Weekend: advance last cash-day midnight to the bar's day.
 def fridayMidnightEpoch = if !IsNaN(lastRthEndEpoch) then lastRthEndEpoch - 16 * hourMs else Double.NaN;
-def midnightEtEpoch = if !IsNaN(rthStartEpoch) then rthStartEpoch - (9 * 60 + 30) * minuteMs
-    else if !IsNaN(fridayMidnightEpoch) and !IsNaN(nowEpoch) then
-        fridayMidnightEpoch + Floor((nowEpoch - fridayMidnightEpoch) / dayMs) * dayMs
-    else Double.NaN;
 
 # Night epoch table (docs: ET walls; runtime: offsets from lastRthEnd / next cash open).
 # Mon-Thu reopen = cash close + 2h. Fri close -> Sun 18:00 ~= +50h.
@@ -159,7 +196,7 @@ def globexReopenEpoch = CompoundValue(1,
         (if isWeekdayReopen then weekdayReopenEpoch
         else if isWeekendReopen then weekendReopenEpoch
         else nowEpoch)
-    else if nightFormReset or isCashOpenPulse then Double.NaN
+    else if nightFormReset or nightSessionResetPulse then Double.NaN
     else globexReopenEpoch[1],
     Double.NaN);
 
@@ -184,18 +221,14 @@ color.DefineColor("fbull", Color.GREEN);
 color.DefineColor("fbear", Color.YELLOW);
 color.DefineColor("original_gray", Color.GRAY);
 
-def LIS = if !IsNaN(lisResetEpoch) and nowEpoch >= lisResetEpoch and
-    (IsNaN(nowEpoch[1]) or nowEpoch[1] < lisResetEpoch) then price else LIS[1];
-def otime = if !IsNaN(rthStartEpoch) and nowEpoch >= rthStartEpoch and
-    (IsNaN(nowEpoch[1]) or nowEpoch[1] < rthStartEpoch) then o else otime[1];
+def LIS = if dayLisClosePulse then price else LIS[1];
+def otime = if dayOpenPulse then o else otime[1];
 def gapAmount = if !IsNaN(otime) and !IsNaN(LIS) then otime - LIS else Double.NaN;
 
-# Day premarket always cash PRE window (epoch-safe). No Premarket input.
-def nperiod = !IsNaN(premarketStartEpoch) and !IsNaN(rthStartEpoch) and
-    nowEpoch > premarketStartEpoch and nowEpoch < rthStartEpoch;
-
-def pmzReset = !IsNaN(premarketResetEpoch) and nowEpoch >= premarketResetEpoch and
-    (IsNaN(nowEpoch[1]) or nowEpoch[1] < premarketResetEpoch);
+# PRE is the Auto study's fixed day premarket window, matching the day-only study.
+def nperiod = if dayUseCashClock then dayClockPremarket else
+    nowEpoch > dayPremarketStartEpoch and nowEpoch < rthStartEpoch;
+def pmzReset = dayResetPulse;
 
 def pmh = if pmzReset then 0
    else if nperiod then
@@ -296,7 +329,7 @@ def forceExtensionReopen = isWeekendReopen or (longGapReopen and !primaryFormFre
 def primaryValidLocked = CompoundValue(1,
     if isGlobexReopen then
         (if forceExtensionReopen then 0 else if primaryFormFresh then 1 else 0)
-    else if nightFormReset or isCashOpenPulse then 0
+    else if nightFormReset or nightSessionResetPulse then 0
     else primaryValidLocked[1],
     0);
 
@@ -373,9 +406,26 @@ def nightLowerAdj = if clampEnabled and !IsNaN(nightCenter) and !IsNaN(nightAdju
 def nightPmzHigh = if clampEnabled then nightUpperAdj else nightUpperRaw;
 def nightPmzLow = if clampEnabled then nightLowerAdj else nightLowerRaw;
 
-# Active band: day in cash RTH; night in night window on futures only (both sessions supported).
-def showNightBand = isFuturesProfile and inNightDisplay and nightFormValid;
+# Active band: day in cash RTH; night in night window on futures only. Day has
+# priority at a handoff so shared status/marker paths can never read night NaNs
+# while a valid day PMZ is displayed.
 def showDayBand = inCashRth and !IsNaN(dayPmzHigh) and !IsNaN(dayPmzLow);
+def showNightBand = isFuturesProfile and !showDayBand and inNightDisplay and nightFormValid;
+
+# At 15:55 the PMH/PML accumulator resets for tomorrow. Preserve the final
+# valid day band through the 17:00 ES maintenance break without extending day
+# entries or allowing the reset values to leak into the display.
+def dayHeldPmzHigh = CompoundValue(1,
+    if showDayBand then dayPmzHigh
+    else if dayVisualWindow then dayHeldPmzHigh[1]
+    else Double.NaN,
+    Double.NaN);
+def dayHeldPmzLow = CompoundValue(1,
+    if showDayBand then dayPmzLow
+    else if dayVisualWindow then dayHeldPmzLow[1]
+    else Double.NaN,
+    Double.NaN);
+def showDayVisualBand = dayVisualWindow and !IsNaN(dayHeldPmzHigh) and !IsNaN(dayHeldPmzLow);
 
 def pmzHigh = if showDayBand then dayPmzHigh
     else if showNightBand then nightPmzHigh
@@ -410,12 +460,38 @@ plot CallSliverLow = if callSliverValid then pmzHigh else Double.NaN;
 plot PutSliverHigh = if putSliverValid then pmzLow else Double.NaN;
 plot PutSliverLow = if putSliverValid then putGateFloor else Double.NaN;
 
+# Keep day and night history on independent horizontal streams. A single
+# horizontal plot can retain the active night segment across historical day
+# bars in TOS, even when the day PMZ itself is valid.
+def dayVisualActive = (ShowPMZBand or ShowDistanceChartStyle) and showDayVisualBand;
+def dayDistanceActive = ShowDistanceChartStyle and showDayVisualBand;
+def dayCallGate = if dayVisualActive then dayHeldPmzLow + MaxDistanceOutsidePmzPoints else Double.NaN;
+def dayPutGate = if dayVisualActive then dayHeldPmzHigh - MaxDistanceOutsidePmzPoints else Double.NaN;
+def dayCallSliver = dayDistanceActive and dayCallGate > dayHeldPmzHigh;
+def dayPutSliver = dayDistanceActive and dayPutGate < dayHeldPmzLow;
+
+plot DayPmzBandHigh = if dayVisualActive then dayHeldPmzHigh else Double.NaN;
+plot DayPmzBandLow = if dayVisualActive then dayHeldPmzLow else Double.NaN;
+plot DayDistanceCallGate = if dayDistanceActive then dayCallGate else Double.NaN;
+plot DayDistancePutGate = if dayDistanceActive then dayPutGate else Double.NaN;
+plot DayCallSliverHigh = if dayCallSliver then dayCallGate else Double.NaN;
+plot DayCallSliverLow = if dayCallSliver then dayHeldPmzHigh else Double.NaN;
+plot DayPutSliverHigh = if dayPutSliver then dayHeldPmzLow else Double.NaN;
+plot DayPutSliverLow = if dayPutSliver then dayPutGate else Double.NaN;
+
 PmzBandHigh.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
 PmzBandLow.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
 PmzBandHigh.SetDefaultColor(color.Color("pbull"));
 PmzBandLow.SetDefaultColor(Color.MAGENTA);
 PmzBandHigh.SetLineWeight(3);
 PmzBandLow.SetLineWeight(3);
+
+DayPmzBandHigh.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+DayPmzBandLow.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+DayPmzBandHigh.SetDefaultColor(color.Color("pbull"));
+DayPmzBandLow.SetDefaultColor(Color.MAGENTA);
+DayPmzBandHigh.SetLineWeight(3);
+DayPmzBandLow.SetLineWeight(3);
 
 DistanceCallGate.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
 DistancePutGate.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
@@ -425,6 +501,15 @@ DistanceCallGate.SetStyle(Curve.LONG_DASH);
 DistancePutGate.SetStyle(Curve.LONG_DASH);
 DistanceCallGate.SetLineWeight(2);
 DistancePutGate.SetLineWeight(2);
+
+DayDistanceCallGate.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+DayDistancePutGate.SetPaintingStrategy(PaintingStrategy.HORIZONTAL);
+DayDistanceCallGate.SetDefaultColor(Color.YELLOW);
+DayDistancePutGate.SetDefaultColor(Color.ORANGE);
+DayDistanceCallGate.SetStyle(Curve.LONG_DASH);
+DayDistancePutGate.SetStyle(Curve.LONG_DASH);
+DayDistanceCallGate.SetLineWeight(2);
+DayDistancePutGate.SetLineWeight(2);
 
 OriginalPmzHigh.SetDefaultColor(color.Color("original_gray"));
 OriginalPmzLow.SetDefaultColor(color.Color("original_gray"));
@@ -436,6 +521,9 @@ AddCloud(OriginalPmzHigh, OriginalPmzLow, color.Color("original_gray"), color.Co
 AddCloud(PmzBandHigh, PmzBandLow, color.Color("pbull"), Color.MAGENTA, no);
 AddCloud(CallSliverLow, CallSliverHigh, CreateColor(52, 168, 83), CreateColor(52, 168, 83), no);
 AddCloud(PutSliverLow, PutSliverHigh, CreateColor(52, 168, 83), CreateColor(52, 168, 83), no);
+AddCloud(DayPmzBandHigh, DayPmzBandLow, color.Color("pbull"), Color.MAGENTA, no);
+AddCloud(DayCallSliverLow, DayCallSliverHigh, CreateColor(52, 168, 83), CreateColor(52, 168, 83), no);
+AddCloud(DayPutSliverLow, DayPutSliverHigh, CreateColor(52, 168, 83), CreateColor(52, 168, 83), no);
 
 script PmzEntryMachine {
     input prevCode = 0;
@@ -566,7 +654,6 @@ script PmzEntryMachine {
     plot newCode = nextState + nextBudget * 10 + nextNeutral * 100 +
         nextTookCall * 1000 + nextTookPut * 10000;
 }
-}
 
 # Extension path: wait until form is frozen before night entries.
 def nightEntryStartEpoch = if primaryValidLocked == 1 then nightEntryOpenEpoch
@@ -575,16 +662,18 @@ def nightEntryStartEpoch = if primaryValidLocked == 1 then nightEntryOpenEpoch
     else nightEntryOpenEpoch;
 
 # Dual state machines: day always; night only when futures profile.
-def daySessionOpen = !IsNaN(rthStartEpoch) and nowEpoch >= rthStartEpoch and
-    (IsNaN(nowEpoch[1]) or nowEpoch[1] < rthStartEpoch);
-def daySecFromOpen = if !IsNaN(rthStartEpoch) then Floor((nowEpoch - rthStartEpoch) / 1000) else -1;
+def daySessionOpen = dayOpenPulse;
+def daySecFromOpen = if dayUseCashClock then dayClockSecondsFromOpen
+    else if !IsNaN(rthStartEpoch) then Floor((nowEpoch - rthStartEpoch) / 1000)
+    else -1;
 def dayFiveSlot = if daySecFromOpen >= 0 then Floor(daySecFromOpen / 300) else -1;
 def dayFiveMinClose = GetAggregationPeriod() <= AggregationPeriod.MIN and dayFiveSlot >= 1 and dayFiveSlot != dayFiveSlot[1];
 def dayFirstFiveSlot = dayFiveSlot == 1 or (dayFiveSlot >= 1 and dayFiveSlot[1] < 1);
 def dayIsLastMinuteOfFive = GetAggregationPeriod() <= AggregationPeriod.MIN and daySecFromOpen >= 0 and
     Floor(daySecFromOpen / 300) != Floor((daySecFromOpen + 60) / 300);
-def dayEntriesAllowed = !IsNaN(dayEntryGateEpoch) and !IsNaN(premarketResetEpoch) and
-    nowEpoch >= dayEntryGateEpoch and nowEpoch < premarketResetEpoch;
+def dayEntriesAllowed = if dayUseCashClock then dayClockEntryWindow else
+    !IsNaN(dayEntryGateEpoch) and !IsNaN(dayPremarketResetEpoch) and
+    nowEpoch >= dayEntryGateEpoch and nowEpoch < dayPremarketResetEpoch;
 
 def nightSessionOpenEpoch = if primaryValidLocked == 1 then globexReopenEpoch else nightEntryStartEpoch;
 def nightFiveSlotEpoch = if primaryValidLocked == 0 and !IsNaN(nightEntryStartEpoch) then
@@ -605,33 +694,38 @@ def nightEntriesAllowed = isFuturesProfile and nightFormFrozen and !IsNaN(nightE
 
 def onePeriod = if GetAggregationPeriod() <= AggregationPeriod.MIN then AggregationPeriod.MIN else GetAggregationPeriod();
 def oneClose = close(period = onePeriod);
-def fiveClose = close(period = period);
+# Secondary FIVE_MIN on a 1-min chart: on the first bar of a new 5-min slot, TOS already
+# points at the *new incomplete* five. Bot evaluates the *completed* previous five at that
+# wall time (e.g. 10:40 boundary → 10:35-10:40 close). Use [1] on boundary bars.
+def fiveCloseRaw = close(period = period);
+def dayFiveClose = if dayFiveMinClose and !IsNaN(fiveCloseRaw[1]) then fiveCloseRaw[1] else fiveCloseRaw;
+def nightFiveClose = if nightFiveMinClose and !IsNaN(fiveCloseRaw[1]) then fiveCloseRaw[1] else fiveCloseRaw;
 
 # Day classifications vs day band
 def dayOneAbove = !IsNaN(dayPmzHigh) and oneClose > dayPmzHigh;
 def dayOneBelow = !IsNaN(dayPmzLow) and oneClose < dayPmzLow;
-def dayFiveAbove = !IsNaN(dayPmzHigh) and fiveClose > dayPmzHigh;
-def dayFiveBelow = !IsNaN(dayPmzLow) and fiveClose < dayPmzLow;
-def dayFiveInside = !IsNaN(dayPmzHigh) and !IsNaN(dayPmzLow) and fiveClose <= dayPmzHigh and fiveClose >= dayPmzLow;
+def dayFiveAbove = !IsNaN(dayPmzHigh) and dayFiveClose > dayPmzHigh;
+def dayFiveBelow = !IsNaN(dayPmzLow) and dayFiveClose < dayPmzLow;
+def dayFiveInside = !IsNaN(dayPmzHigh) and !IsNaN(dayPmzLow) and dayFiveClose <= dayPmzHigh and dayFiveClose >= dayPmzLow;
 def dayCallDist = oneClose - dayPmzLow;
 def dayPutDist = dayPmzHigh - oneClose;
 def dayCallOk = !IsNaN(dayCallDist) and dayCallDist <= MaxDistanceOutsidePmzPoints;
 def dayPutOk = !IsNaN(dayPutDist) and dayPutDist <= MaxDistanceOutsidePmzPoints;
-def dayFiveCallOk = !IsNaN(fiveClose - dayPmzLow) and (fiveClose - dayPmzLow) <= MaxDistanceOutsidePmzPoints;
-def dayFivePutOk = !IsNaN(dayPmzHigh - fiveClose) and (dayPmzHigh - fiveClose) <= MaxDistanceOutsidePmzPoints;
+def dayFiveCallOk = !IsNaN(dayFiveClose - dayPmzLow) and (dayFiveClose - dayPmzLow) <= MaxDistanceOutsidePmzPoints;
+def dayFivePutOk = !IsNaN(dayPmzHigh - dayFiveClose) and (dayPmzHigh - dayFiveClose) <= MaxDistanceOutsidePmzPoints;
 
 # Night classifications vs night band
 def nightOneAbove = !IsNaN(nightPmzHigh) and oneClose > nightPmzHigh;
 def nightOneBelow = !IsNaN(nightPmzLow) and oneClose < nightPmzLow;
-def nightFiveAbove = !IsNaN(nightPmzHigh) and fiveClose > nightPmzHigh;
-def nightFiveBelow = !IsNaN(nightPmzLow) and fiveClose < nightPmzLow;
-def nightFiveInside = !IsNaN(nightPmzHigh) and !IsNaN(nightPmzLow) and fiveClose <= nightPmzHigh and fiveClose >= nightPmzLow;
+def nightFiveAbove = !IsNaN(nightPmzHigh) and nightFiveClose > nightPmzHigh;
+def nightFiveBelow = !IsNaN(nightPmzLow) and nightFiveClose < nightPmzLow;
+def nightFiveInside = !IsNaN(nightPmzHigh) and !IsNaN(nightPmzLow) and nightFiveClose <= nightPmzHigh and nightFiveClose >= nightPmzLow;
 def nightCallDist = oneClose - nightPmzLow;
 def nightPutDist = nightPmzHigh - oneClose;
 def nightCallOk = !IsNaN(nightCallDist) and nightCallDist <= MaxDistanceOutsidePmzPoints;
 def nightPutOk = !IsNaN(nightPutDist) and nightPutDist <= MaxDistanceOutsidePmzPoints;
-def nightFiveCallOk = !IsNaN(fiveClose - nightPmzLow) and (fiveClose - nightPmzLow) <= MaxDistanceOutsidePmzPoints;
-def nightFivePutOk = !IsNaN(nightPmzHigh - fiveClose) and (nightPmzHigh - fiveClose) <= MaxDistanceOutsidePmzPoints;
+def nightFiveCallOk = !IsNaN(nightFiveClose - nightPmzLow) and (nightFiveClose - nightPmzLow) <= MaxDistanceOutsidePmzPoints;
+def nightFivePutOk = !IsNaN(nightPmzHigh - nightFiveClose) and (nightPmzHigh - nightFiveClose) <= MaxDistanceOutsidePmzPoints;
 
 def enableFullReversalFlag = if EnableFullReversalFreshBreakout then 1 else 0;
 
@@ -739,6 +833,7 @@ def nightPutFire = nightCleanPut or nightPullPut;
 def callFire = dayCallFire or nightCallFire;
 def putFire = dayPutFire or nightPutFire;
 def entriesAllowed = dayEntriesAllowed or nightEntriesAllowed;
+
 def state = if showNightBand then Floor(nightSmState % 10) else Floor(daySmState % 10);
 def cleanArm = 0;
 def triggerBudget = if showNightBand then Floor(Floor(nightSmState / 10) % 10) else Floor(Floor(daySmState / 10) % 10);
@@ -774,6 +869,11 @@ plot DebugInNightDisplay = if inNightDisplay then 1 else 0;
 plot DebugFiveSlot = fiveSlot;
 plot DebugNightEntries = if nightEntriesAllowed then 1 else 0;
 plot DebugDayEntries = if dayEntriesAllowed then 1 else 0;
+plot DebugDayWindow = if inCashRth then 1 else 0;
+plot DebugDayPremarket = if nperiod then 1 else 0;
+plot DebugDayPmh = pmh;
+plot DebugDayPml = pml;
+plot DebugDayBandValid = if !IsNaN(dayPmzHigh) and !IsNaN(dayPmzLow) then 1 else 0;
 plot DebugReopenKind = if isWeekdayReopen then 1 else if isWeekendReopen then 2 else if longGapReopen then 3 else 0;
 DebugState.Hide();
 DebugCleanArm.Hide();
@@ -795,6 +895,11 @@ DebugInNightDisplay.Hide();
 DebugFiveSlot.Hide();
 DebugNightEntries.Hide();
 DebugDayEntries.Hide();
+DebugDayWindow.Hide();
+DebugDayPremarket.Hide();
+DebugDayPmh.Hide();
+DebugDayPml.Hide();
+DebugDayBandValid.Hide();
 DebugReopenKind.Hide();
 
 plot CallEntryMarker = if ShowEntryMarkers and callFire then oneClose else Double.NaN;
@@ -809,35 +914,72 @@ PutEntryMarker.SetLineWeight(5);
 PutEntryMarker.SetDefaultColor(CreateColor(234, 67, 53));
 PutEntryMarker.HideBubble();
 
+# Session-specific marker streams keep historical day and night entry events
+# independently renderable, matching the separate PMZ-band streams above.
+plot DayCallEntryMarker = if ShowEntryMarkers and dayCallFire then oneClose else Double.NaN;
+DayCallEntryMarker.SetPaintingStrategy(PaintingStrategy.ARROW_UP);
+DayCallEntryMarker.SetLineWeight(5);
+DayCallEntryMarker.SetDefaultColor(CreateColor(52, 168, 83));
+DayCallEntryMarker.HideBubble();
+
+plot DayPutEntryMarker = if ShowEntryMarkers and dayPutFire then oneClose else Double.NaN;
+DayPutEntryMarker.SetPaintingStrategy(PaintingStrategy.ARROW_DOWN);
+DayPutEntryMarker.SetLineWeight(5);
+DayPutEntryMarker.SetDefaultColor(CreateColor(234, 67, 53));
+DayPutEntryMarker.HideBubble();
+
+plot NightCallEntryMarker = if ShowEntryMarkers and nightCallFire then oneClose else Double.NaN;
+NightCallEntryMarker.SetPaintingStrategy(PaintingStrategy.ARROW_UP);
+NightCallEntryMarker.SetLineWeight(5);
+NightCallEntryMarker.SetDefaultColor(CreateColor(52, 168, 83));
+NightCallEntryMarker.HideBubble();
+
+plot NightPutEntryMarker = if ShowEntryMarkers and nightPutFire then oneClose else Double.NaN;
+NightPutEntryMarker.SetPaintingStrategy(PaintingStrategy.ARROW_DOWN);
+NightPutEntryMarker.SetLineWeight(5);
+NightPutEntryMarker.SetDefaultColor(CreateColor(234, 67, 53));
+NightPutEntryMarker.HideBubble();
+
 def entryTimeSec = if !IsNaN(midnightEtEpoch) then Floor((nowEpoch - midnightEtEpoch) / 1000) else Double.NaN;
-AddChartBubble(
-    ShowEntryMarkers and callFire and !IsNaN(entryTimeSec),
-    oneClose,
-    "CALL " +
-    AsText(
-        Floor(entryTimeSec / 3600) + Floor((entryTimeSec % 3600) / 60) / 100,
-        NumberFormat.TWO_DECIMAL_PLACES) + " ET",
-    CreateColor(52, 168, 83),
-    yes);
-AddChartBubble(
-    ShowEntryMarkers and putFire and !IsNaN(entryTimeSec),
-    oneClose,
-    "PUT " +
-    AsText(
-        Floor(entryTimeSec / 3600) + Floor((entryTimeSec % 3600) / 60) / 100,
-        NumberFormat.TWO_DECIMAL_PLACES) + " ET",
-    CreateColor(234, 67, 53),
-    no);
+def entryLabelOffsetSeconds =
+    if EntryLabelTimeZone == EntryLabelTimeZone.CT then -1 * 60 * 60
+    else if EntryLabelTimeZone == EntryLabelTimeZone.MT then -2 * 60 * 60
+    else if EntryLabelTimeZone == EntryLabelTimeZone.PT then -3 * 60 * 60
+    else if EntryLabelTimeZone == EntryLabelTimeZone.AKT then -4 * 60 * 60
+    else if EntryLabelTimeZone == EntryLabelTimeZone.HT then -6 * 60 * 60
+    else 0;
+def entryLabelSec = entryTimeSec + entryLabelOffsetSeconds;
+def entryLabelSecWrapped = if entryLabelSec < 0 then entryLabelSec + 24 * 60 * 60 else entryLabelSec;
+def entryLabelHour = Floor(entryLabelSecWrapped / 3600);
+def entryLabelMinute = Floor((entryLabelSecWrapped % 3600) / 60);
+def entryLabelHourTens = Floor(entryLabelHour / 10);
+def entryLabelHourOnes = entryLabelHour % 10;
+def entryLabelMinuteTens = Floor(entryLabelMinute / 10);
+def entryLabelMinuteOnes = entryLabelMinute % 10;
+
+# Session-specific labels use the same independent fire flags as their arrows.
+# The timestamp is derived from RTH epochs; this input affects display only.
+AddChartBubble(!IsNaN(DayCallEntryMarker) or !IsNaN(NightCallEntryMarker), oneClose,
+    "" + entryLabelHour + ":" + (if entryLabelMinute < 10 then "0" else "") + entryLabelMinute +
+    (if EntryLabelTimeZone == EntryLabelTimeZone.CT then " CT" else if EntryLabelTimeZone == EntryLabelTimeZone.MT then " MT" else if EntryLabelTimeZone == EntryLabelTimeZone.PT then " PT" else if EntryLabelTimeZone == EntryLabelTimeZone.AKT then " AKT" else if EntryLabelTimeZone == EntryLabelTimeZone.HT then " HT" else " ET"), CreateColor(52, 168, 83), yes);
+AddChartBubble(!IsNaN(DayPutEntryMarker) or !IsNaN(NightPutEntryMarker), oneClose,
+    "" + entryLabelHour + ":" + (if entryLabelMinute < 10 then "0" else "") + entryLabelMinute +
+    (if EntryLabelTimeZone == EntryLabelTimeZone.CT then " CT" else if EntryLabelTimeZone == EntryLabelTimeZone.MT then " MT" else if EntryLabelTimeZone == EntryLabelTimeZone.PT then " PT" else if EntryLabelTimeZone == EntryLabelTimeZone.AKT then " AKT" else if EntryLabelTimeZone == EntryLabelTimeZone.HT then " HT" else " ET"), CreateColor(234, 67, 53), no);
 
 def neutralAtOpen = isSessionOpen;
 def neutralOnFiveInside = smFiveMinuteClose and fiveInside and entriesAllowed;
 AddVerticalLine(ShowNeutralLines and neutralAtOpen, "Neutral", CreateColor(161, 66, 244), Curve.SHORT_DASH);
 AddVerticalLine(ShowNeutralLines and neutralOnFiveInside, "Neutral", CreateColor(161, 66, 244), Curve.SHORT_DASH);
 
-def sessionTag = if showNightBand then "NIGHT " else if showDayBand then "DAY " else "";
+AddLabel(ShowBuildStamp,
+    "AUTO BUILD 2026-07-14 10:30:40 EDT | /ES /NQ /RTY /YM CME index profiles",
+    Color.WHITE,
+    location = Location.TOP_RIGHT,
+    size = FontSize.SMALL);
+
 AddLabel(
     ShowStatusStrip,
-    sessionTag +
+    (if showNightBand then "NIGHT " else if showDayBand then "DAY " else "") +
     "PMZ Low: " + AsText(pmzLow, NumberFormat.TWO_DECIMAL_PLACES),
     Color.RED,
     location = Location.TOP_LEFT,
@@ -957,7 +1099,7 @@ AddLabel(bannerActive,
 
 def chartIsOneMinute = GetAggregationPeriod() == AggregationPeriod.MIN;
 AddLabel(Banner and !chartIsOneMinute,
-    "WARNING: Use a 1-minute /ES continuous chart. Current aggregation is not 1-minute.",
+    "WARNING: Use a 1-minute /ES, /NQ, /RTY, or /YM continuous chart. Current aggregation is not 1-minute.",
     Color.MAGENTA);
 
 AddLabel(Banner and isFuturesProfile and !nightFormValid and inNightDisplay,

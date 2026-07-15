@@ -7,6 +7,8 @@
 # far-distance 3-minute deferral, and manual PMZ override inputs.
 # Parity target (day): EntryChartGenerator TestScenarios 01-12, 14-20, 22-23.
 # 2026-07-13: Type A from-neutral, Type C same-bar one-shot, same-side took latch (T1–T3; not T5).
+# 2026-07-13: boundary five OHLC uses completed prior five (fiveClose[1]) so 5-min-inside
+# neutral matches bot (e.g. 10:40 close inside PMZ).
 # Night PMZ band: Tr3ndy form/display math + Peakbot Sunday form extension; night entries use day SM methodology.
 # Import: TOS Studies -> Edit Studies -> Create -> paste; apply to a /ES 1-minute continuous chart with extended hours.
 # TOS continuous /ES and the TOS LIS definition below are the canonical chart reference.
@@ -622,7 +624,11 @@ def entriesAllowed = dayEntriesAllowed or nightEntriesAllowed;
 # Defensive floor to the chart's own primary period.
 def onePeriod = if GetAggregationPeriod() <= AggregationPeriod.MIN then AggregationPeriod.MIN else GetAggregationPeriod();
 def oneClose = close(period = onePeriod);
-def fiveClose = close(period = period);
+# Secondary FIVE_MIN on a 1-min chart: on the first bar of a new 5-min slot, TOS already
+# points at the *new incomplete* five. Bot evaluates the *completed* previous five at that
+# wall time (e.g. 10:40 boundary → 10:35-10:40 close). Use [1] on boundary bars.
+def fiveCloseRaw = close(period = period);
+def fiveClose = if isFiveMinuteClose and !IsNaN(fiveCloseRaw[1]) then fiveCloseRaw[1] else fiveCloseRaw;
 def oneAbove = !IsNaN(pmzHigh) and oneClose > pmzHigh;
 def oneBelow = !IsNaN(pmzLow) and oneClose < pmzLow;
 def fiveAbove = !IsNaN(pmzHigh) and fiveClose > pmzHigh;

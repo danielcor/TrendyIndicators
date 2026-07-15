@@ -7,6 +7,8 @@
 # Parity target: EntryChartGenerator TestScenarios 01-12, 14-20, 22-23.
 # 2026-07-13 fix: Type A from-neutral + Type C same-bar one-shot + same-side took latch
 # (T1–T3 PMZ markers; T5 out of scope).
+# 2026-07-13: boundary five OHLC uses completed prior five (fiveClose[1]) so 5-min-inside
+# neutral matches bot (e.g. 10:40 close inside PMZ).
 # Import: TOS Studies -> Edit Studies -> Create -> paste; apply to a /ES 1-minute continuous chart.
 # TOS continuous /ES and the TOS LIS definition below are the canonical chart reference.
 # Lines must overlay the price axis. If PMZ/gate lines do not align with the ES scale, edit the
@@ -427,9 +429,15 @@ def entriesAllowed = nowEpoch >= entryGateEpoch and nowEpoch < premarketResetEpo
 # flooring here lets the chartIsOneMinute warning banner below actually render instead.
 def onePeriod = if GetAggregationPeriod() <= AggregationPeriod.MIN then AggregationPeriod.MIN else GetAggregationPeriod();
 def oneClose = close(period = onePeriod);
-def fiveClose = close(period = period);
-def fiveHigh = high(period = period);
-def fiveLow = low(period = period);
+# Secondary FIVE_MIN on a 1-min chart: on the first bar of a new 5-min slot, TOS already
+# points at the *new incomplete* five. Bot evaluates the *completed* previous five at that
+# wall time (e.g. 10:40 boundary → 10:35-10:40 close). Use [1] on boundary bars.
+def fiveCloseRaw = close(period = period);
+def fiveHighRaw = high(period = period);
+def fiveLowRaw = low(period = period);
+def fiveClose = if isFiveMinuteClose and !IsNaN(fiveCloseRaw[1]) then fiveCloseRaw[1] else fiveCloseRaw;
+def fiveHigh = if isFiveMinuteClose and !IsNaN(fiveHighRaw[1]) then fiveHighRaw[1] else fiveHighRaw;
+def fiveLow = if isFiveMinuteClose and !IsNaN(fiveLowRaw[1]) then fiveLowRaw[1] else fiveLowRaw;
 def oneAbove = !IsNaN(pmzHigh) and oneClose > pmzHigh;
 def oneBelow = !IsNaN(pmzLow) and oneClose < pmzLow;
 def fiveAbove = !IsNaN(pmzHigh) and fiveClose > pmzHigh;

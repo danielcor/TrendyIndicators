@@ -12,7 +12,9 @@ PMZBot-style entry state machine (entries only; bot does not need to be running)
 | `PMZBot_T1T3_EntryIndicator.ts.txt` | **Day only** (canonical name; same as `_Day`) |
 | `PMZBot_T1T3_EntryIndicator_Day.ts.txt` | **Day only** — cash RTH entries, bot day parity |
 | `PMZBot_T1T3_EntryIndicator_DayOrNight.ts.txt` | **Day *or* night** via `NightMode` / `futures` flags (not both at once) |
-| `PMZBot_T1T3_EntryIndicator_Auto.ts.txt` | **Day *and* night** auto: futures (symbol has `/`) get both sessions; equities day-only. No NightMode/PRE/futures flags. |
+| `PMZBot_T1T3_EntryIndicator_Auto.ts.txt` | **Day *and* night** auto WIP (allowlist DayOnlyMode/Force, DistTpl). Prefer `_Auto_RC_DistTpl` when overnight must stay solid. |
+| `PMZBot_T1T3_EntryIndicator_Auto_RC_DistTpl.ts.txt` | **Preferred Auto RC** — known-good night math (`c905043` + alerts) + `ShowLiveEntryLabel` + `UseInstrumentDistanceDefaults` (normal PMZ, family maxD ES/MES=10 RTY=5 NQ=25 YM=25 CL/MCL=20) + continuous family night (ES/MES NQ/MNQ RTY/M2K/TF YM/MYM CL/MCL). |
+| `PMZBot_T5_ContinuationIndicator.ts.txt` | **Tier5 only** — standalone Trendy Cloud + 1m velocity continuation markers (not PMZ SM). Stack on the same price subgraph as a T1–T3 study. |
 
 ## Entry markers & profit targets
 
@@ -27,6 +29,14 @@ All 4 study files share the same entry-marker inputs:
   a single shared plot colored via `AssignValueColor` was unreliable for sparse POINTS plots.
 - `ProfitTarget1Points` / `ProfitTarget2Points` / `ProfitTarget3Points` (defaults 5 / 10 / 15):
   configurable point deltas from the entry close for each target circle.
+
+The Auto study also has **optional alerts** (all default **off**):
+
+- `AlertOnEntry`: Message Center text (`PMZ BUY/SELL entry @ level`) when an entry fires.
+- `AlertEntrySound`: optional `Sound.Ring` on entry alerts. Off = silent text only (still needs `AlertOnEntry`).
+- `AlertOnProfitTarget`: first touch of each TP level after an entry — one Message Center alert per target per entry (latches reset on each new entry; touches count from the bar after the entry bar). BUY touch = bar high ≥ target; SELL touch = bar low ≤ target.
+- `AlertProfitTargetSound`: optional sounds for TP alerts (`TP1` Ding, `TP2` Chimes, `TP3` Bell). Off = silent text only (still needs `AlertOnProfitTarget`).
+- Platform: alerts fire on live bars only (never historical backfill) and land at 1-minute bar completion (`once_per_bar`). To hide Message Center and keep sound only: study gear → Alerts → uncheck "Show in Message center".
 
 The Auto study additionally shows a latched **live-entry label** (top-left, under the compact
 PMZ High/Low labels): exactly one at a time, always the most recent entry — `BUY/SELL HH:MM TZ
@@ -62,24 +72,88 @@ on it silently never renders.
 
 `PMZBot_T1T3_EntryIndicator_Auto.ts.txt` runs **two** entry state machines:
 
-- **Day** in cash RTH (all symbols).
-- **Night** only when the chart symbol matches continuous futures (`GetSymbol() matches "/*"`, e.g. `/ES:XCME`).
-- No `NightMode`, `Premarket`, or `futures` inputs. Still has clamp min/max, distance, budget, banners.
+- **Day** in cash RTH on **every** symbol (equity and futures).
+- **Night** only when all of the following hold:
+  1. Chart symbol is in the **CME US equity-index schedule family** (same cash RTH + Globex calendar as `/ES`), and
+  2. `DayOnlyMode = no` (default).
 
-Equity charts (SPY, AAPL, …) never arm night entries. Futures get day markers in RTH and night markers overnight.
+### Inputs unique to Auto
+
+| Input | Default | Role |
+|-------|---------|------|
+| `DayOnlyMode` | `no` | When **yes**, suppress night PMZ band + night SM/entries on **all** symbols (day cash path only). Use this on `/ES` when you want the Auto study without overnight markers. On equity/unsupported futures, set **yes** to silence the allowlist warning. |
+| `ForceAutoNightFutures` | `no` | Force Auto night when the chart is a **dated** front month (e.g. `/CLU25:XNYM`) or another symbol not on the continuous equality list. |
+| `ShowAutoAllowlistWarning` | `yes` | When `DayOnlyMode=no` and the chart symbol is **not** on the Auto day+night futures allowlist (equity or e.g. `/GC`), show high-visibility TOP_RIGHT warnings listing supported roots. |
+| `AlertOnEntry` / `AlertEntrySound` | `no` | Optional entry Message Center (+ optional Ring). |
+| `AlertOnProfitTarget` / `AlertProfitTargetSound` | `no` | Optional first-touch TP alerts (+ optional sounds). |
+
+No `NightMode`, `Premarket`, or `futures` inputs. Still has clamp min/max, distance, budget, banners.
+
+### Symbol support
+
+| Chart | Day band + day entries | Night band + night entries |
+|-------|------------------------|----------------------------|
+| **Equity** (SPY, QQQ, IWM, DIA, AAPL, …) | yes | no |
+| **Allowlisted futures** (below) with `DayOnlyMode=no` | yes | yes |
+| Same allowlist with `DayOnlyMode=yes` | yes | no |
+| Other futures (GC, 6E, ZB, BTC, NKD, EMD, …) | day path may still paint if RTH epochs exist | **no** |
+
+**Auto day+night futures allowlist** (continuous, dated front-month, micros; any exchange suffix on `GetSymbol()`):
+
+| Root | Micros / aliases matched | Notes |
+|------|--------------------------|--------|
+| ES | MES | Equity-index canonical |
+| NQ | MNQ | Equity-index |
+| RTY | M2K, legacy TF | Equity-index |
+| YM | MYM | Equity-index |
+| CL | MCL | WTI crude — **included because upstream Tr3ndy/customer PMZ is used on /CL**; same ES-style session offsets, retune clamp/distance/TPs for $/bbl |
+
+Examples that enable night when `DayOnlyMode=no`: continuous `/ES:XCME`, `/MES:XCME`, `/NQ:XCME`, `/MNQ:XCME`, `/RTY:XCME`, `/M2K:XCME`, `/YM:XCBT`, `/MYM:XCBT`, `/CL:XNYM`, `/MCL:XNYM`. Dated e.g. `/ESU25:XCME`, `/CLU25:XNYM` need `ForceAutoNightFutures=yes`.
+
+Detection uses **exact** `GetSymbol()` equality on continuous roots (with and without exchange namespace). ThinkScript on TOS rejected regex `matches` here (`Invalid statement: def`). Dated front months are **not** auto-detected — set `ForceAutoNightFutures=yes`.
+
+**Warning behavior:** with `DayOnlyMode=no` (default Auto), equity and non-allowlisted futures still run the **day** path, but orange/yellow chart labels warn that night is disabled and print the supported list. Silence with `DayOnlyMode=yes` or `ShowAutoAllowlistWarning=no`. For dated `/CLU25` etc., use `ForceAutoNightFutures=yes`.
+
+### Known issues / limits of “all same-schedule futures”
+
+1. **Allowlist only — not every futures product.** Night math uses the **US cash-style close tail → Globex ~18:00 reopen → next cash-style open** pattern (same code path as `/ES`). `/CL`/`/MCL` are allowlisted for customer/Tr3ndy PMZ use on oil; metals (`/GC`), FX (`/6E`), rates (`/ZB`), crypto, and Nikkei (`/NKD`) stay **day-only**.
+2. **Point-scale clamp defaults are ES-centric.** `MinPmzWidthPoints`/`MaxPmzWidthPoints` default **5–8** (bot ES parity). NQ/MNQ, RTY/M2K, YM/MYM, and especially **CL/MCL ($/bbl)** need **different** clamp widths; leave `AdjustPMZ` on and tune per symbol or turn clamp off. Distance gate `MaxDistanceOutsidePmzPoints` (default 10) is likewise ES-scaled.
+3. **Profit-target point defaults (5/10/15)** are also ES-scaled; retune on NQ/YM/RTY/CL/micros.
+4. **`RegularTradingStart`/`End` on equities vs futures.** Day anchors come from TOS session epochs for the chart symbol. On `/CL`, those epochs may not match equity cash 09:30–16:00 exactly — verify with Banner / `DebugDayWindow` on live oil charts.
+5. **Extended-hours chart required** for day premarket PMZ seed and for night form/display. Without extended hours, equity premarket and Globex overnight bars are missing.
+6. **Dated roll / continuous vs front month.** Continuous (`/ES`, `/CL`) and dated (`/ESU25`, `/CLU25`) both match, but **PMZ levels are local to the chart series** — continuous vs front-month can differ around rolls.
+7. **Composite / multi-leg symbols** (`/ES+/YM`, spreads): `GetSymbol()` / `GetSymbolPart` shape is not specially handled; treat as unsupported for night.
+8. **Mid-cap / other equity index** (e.g. EMD) is **not** in the allowlist — add only after a product decision + live TOS check.
+9. **Holiday Globex afternoon breaks** are still not calendared (same as before).
+10. **No regex symbol detect:** TOS rejected `matches` in this study (`Invalid statement: def`). Continuous roots use exact equality; dated months need `ForceAutoNightFutures`.
+
+Equity charts never arm night entries (no Globex session on the equity tape in this study). Allowlisted futures get day markers in the day window and night markers overnight unless `DayOnlyMode=yes`.
+
+## Tier5 / MES momentum setups (standalone)
+
+`PMZBot_T5_ContinuationIndicator.ts.txt` — **second study**, /MES (or /ES) **trade markers**.
+
+- **Goal:** Clear one-lot futures P&amp;L path (not SPX option T5 parity).
+- **Defaults (v2.1 MES):** `Profile=MES_BALANCED` (RTH, vr 0.60, cd 30, hold 5, hard 8, cloud 3, trail 5).
+  Other presets: **MES_STRICT**, **MES_ACTIVE**, **MES_GLOBEX**, **SCOUT_DEBUG**, **CUSTOM**.
+- **Markers:** Green **MES BUY @ price** / red **MES SELL @ price**; exit bubbles
+  **X LONG/SHORT ±pts ±$** with reason (HARD/CLOUD/TRAIL/FLIP/FLAT).
+- **Lines:** White entry, red stop while open; optional bar tint while in trade.
+- **Stamp:** `MES T5 v2.1 | BALANCED|… | RTH|GLOBEX | SETUPS|SCOUT | vr>=… | stop …pt`
+- **Stack** on `/ES` or `/MES` 1m price subgraph. `MesDollarsPerPoint=5` (MES) or `50` (ES).
 
 ## Explicitly out of scope
 
-- Exit markers, consolidation pause, active-trade/cooldown/de-dupe awareness, tier-close
-  simulation — entries only.
-- SPX strike/premium selection, IV, DTE — this is a pure price entry-timing visual, not a
-  trade sizing tool.
-- Bot overnight execution (bot is SPX day-only).
+- PMZ T1–T3 exit/consolidation/slot simulation on the PMZ studies — entries only there.
+- SPX strike/premium / full TrendyPlus option P0–P2.
+- Holiday Globex afternoon-break calendar.
 
 ## Setup in TOS
 
-1. Chart: **TOS continuous `/ES`** (or equity with extended hours for day), **1-minute**,
-   extended/pre-market hours enabled, multi-day lookback.
+1. Chart: **1-minute** with extended/pre-market hours, multi-day lookback.
+   - Auto night: allowlisted futures (`/ES`, `/MES`, `/NQ`, `/MNQ`, `/RTY`, `/M2K`, `/YM`, `/MYM`, `/CL`, `/MCL`, continuous or dated).
+   - Auto day-only / equities: SPY, QQQ, etc., or futures with `DayOnlyMode=yes`.
+   - Day-only studies: still typically **`/ES`** continuous for bot parity checks.
 2. Studies → Edit Studies → Create → paste the chosen study file → Apply.
 3. Confirm the study is on the **price subgraph** (not a separate lower panel) — if PMZ/gate
    lines don't track the ES price axis, use the study's gear icon → Move to → Existing

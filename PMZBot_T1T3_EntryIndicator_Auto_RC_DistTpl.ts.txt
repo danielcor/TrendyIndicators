@@ -1,31 +1,22 @@
 ##
-# PMZBot T1+T2+T3 Entry Indicator - Auto (day AND night; optional DayOnlyMode)
+# PMZBot T1+T2+T3 Entry Indicator — Auto (day AND night, no mode flags)
 # File: PMZBot_T1T3_EntryIndicator_Auto.ts.txt
-# RC BUILD: 2026-07-21 12:05 EDT - ShowLiveEntryLabel + UseInstrumentDistanceDefaults
-#   DistTpl ON: normal PMZ (no 5-8 clamp) + per-family max distance ES10/RTY5/NQ25/YM25/CL20
-# Prior: 2026-07-20 23:00 - no string defs; inline GetSymbol() equality + CL/MCL + ForceAutoNightFutures
-# Purpose: Concurrent day + night by clock on the listed Auto futures family.
-#
-# AUTO DAY+NIGHT ALLOWLIST (nightEnabled when DayOnlyMode=no):
-#   Continuous GetSymbol() equality (with and without exchange namespace):
-#     /ES:XCME /MES:XCME
-#     /NQ:XCME /MNQ:XCME
-#     /RTY:XCME /M2K:XCME /TF:XCME
-#     /YM:XCBT /MYM:XCBT
-#     /CL:XNYM /MCL:XNYM   (WTI - customer/Tr3ndy PMZ on oil)
-#   Dated front months (e.g. /ESU25:XCME, /CLU25:XNYM): set ForceAutoNightFutures = yes
-# NOT on Auto night allowlist (day path only unless DayOnlyMode or Force):
-#   Equity (SPY, QQQ, AAPL, ...), other futures (GC, 6E, ZB, NKD, BTC, EMD, spreads, ...)
-#
-#   DayOnlyMode=yes: force day cash path only on every symbol (suppress night band + night SM/entries).
-# No NightMode / Premarket / futures inputs. Clamp min/max still user-adjustable
-# (defaults are ES-scale; retune on NQ/YM/RTY/CL - oil is $/bbl not index points).
+# RC BUILD: 2026-07-15 14:35:29 EDT (v2026.07.15-rc1 + alerts + liveEntry + DistTpl + families 2026-07-21)
+# Base: known-good night math (fridayMidnightEpoch absolute weekend). No 16:05 night rewrites.
+# + alerts-only (opt sound) 2026-07-17
+# + ShowLiveEntryLabel (BUY/SELL+TP only, independent of StatusStrip)
+# + UseInstrumentDistanceDefaults: normal PMZ (no 5-8 clamp) + family maxD ES/MES=10 RTY=5 NQ=25 YM=25 CL/MCL=20
+# + Full continuous family night profile: ES/MES NQ/MNQ RTY/M2K/TF YM/MYM CL/MCL (minis = parents)
+# Purpose: Concurrent day + night sessions by clock. Futures vs equity inferred from GetSymbol().
+#   Supported CME index futures (/ES, /NQ, /RTY, /YM): day cash entries + Globex night entries.
+#   Equity (e.g. SPY, AAPL): day cash entries only.
+# No NightMode / Premarket / futures inputs. Clamp min/max still user-adjustable.
 # Scope: entries only. No exits, slot occupancy, cooldown/de-dupe, active-trade caps, or consolidation pause.
-# 2026-07-13: Type A from-neutral, Type C same-bar one-shot, same-side took latch (T1-T3; not T5).
+# 2026-07-13: Type A from-neutral, Type C same-bar one-shot, same-side took latch (T1–T3; not T5).
 # 2026-07-13: boundary five OHLC uses completed prior five (fiveClose[1]) so 5-min-inside
 # neutral matches bot (e.g. 10:40 close inside PMZ).
 # Import: TOS Studies -> Edit Studies -> Create -> paste; 1-minute chart with extended hours.
-# Session math still uses cash-style RTH anchors + Globex form/reopen offsets (same as /ES path).
+# TOS continuous CME equity-index futures and the TOS LIS definition below are the canonical chart reference.
 # Lines must overlay the price axis. If PMZ/gate lines do not align with the chart scale, edit the
 # study on the chart -> gear icon -> make sure it is on the price subgraph (not a lower panel).
 #
@@ -54,11 +45,11 @@ input Banner = no;
 input ShowStatusStrip = yes;
 #hint ShowStatusStrip: Large high-contrast PMZ High/Low values in the chart corner (does not control the live BUY/SELL entry label).
 input ShowLiveEntryLabel = yes;
-#hint ShowLiveEntryLabel: Show ONLY the latched last-entry label (BUY or SELL + time + entry price + TP1/TP2/TP3). Independent of ShowStatusStrip — turn StatusStrip off and leave this on for a clean chart with just the live entry.
+#hint ShowLiveEntryLabel: Show ONLY the latched last-entry label (BUY or SELL + time + entry price + TP1/TP2/TP3). Independent of ShowStatusStrip.
 input ShowDistanceChartStyle = yes;
 #hint ShowDistanceChartStyle: Match the /distance chart: PMZ band, +/- distance gate, admit slivers, triangles.
 input ShowEntryMarkers = yes;
-#hint ShowEntryMarkers: Green/red triangles at the 1-minute close on entry fires. Requires a 1-minute chart (equity or CME equity-index futures family).
+#hint ShowEntryMarkers: Green/red triangles at the 1-minute close on entry fires. Requires a 1-minute supported CME index-futures chart.
 input ShowProfitTargets = yes;
 #hint ShowProfitTargets: Small circles at the entry bar marking 3 configurable profit-target price levels.
 input ProfitTarget1Points = 5.0;
@@ -90,40 +81,22 @@ input ShowPMZBand = yes;
 input ShowOriginalPMZWhenAdjusted = no;
 #hint ShowOriginalPMZWhenAdjusted: Plot the unadjusted PMZ band in gray when AdjustPMZ is enabled.
 input MaxDistanceOutsidePmzPoints = 10.0;
-#hint MaxDistanceOutsidePmzPoints: Manual max distance outside PMZ (points). CALL = close - PMZ Low; PUT = PMZ High - close; strict greater-than rejection. ES/MES value and fallback when UseInstrumentDistanceDefaults=no or symbol not in template.
+#hint MaxDistanceOutsidePmzPoints: Manual max distance outside PMZ (points). ES/MES value and fallback when DistTpl=no or symbol not in a family. CALL=close-PMZ Low; PUT=PMZ High-close; strict GT reject.
 input UseInstrumentDistanceDefaults = yes;
-#hint UseInstrumentDistanceDefaults: Futures template. When yes: (1) NORMAL PMZ — skip AdjustPMZ 5-8 width clamp; (2) per-family max distance ES/MES=MaxDistance input (10), RTY/M2K/TF=5, NQ/MNQ=25, YM/MYM=25, CL/MCL=20. When no: AdjustPMZ + MaxDistanceOutsidePmzPoints apply to all symbols as before.
+#hint UseInstrumentDistanceDefaults: When yes: (1) NORMAL PMZ — skip AdjustPMZ 5-8 clamp; (2) family max distance: ES/MES=this input (10), RTY/M2K/TF=5, NQ/MNQ=25, YM/MYM=25, CL/MCL=20. Minis share parent defaults. When no: AdjustPMZ + MaxDistance apply to all symbols.
 input MaxTriggerCandles = 5;
 #hint MaxTriggerCandles: One-minute trigger budget after a 5-minute inside-PMZ pullback confirmation.
 input EnableFullReversalFreshBreakout = yes;
 #hint EnableFullReversalFreshBreakout: Treat a 5-minute outside-to-opposite-outside traversal as a fresh clean breakout arm.
 input EntryGateTimeET = 0935;
-#hint EntryGateTimeET: Day mode only - HHmm offset from cash RegularTradingStart (0935 = +5 minutes). Not platform clock.
+#hint EntryGateTimeET: Day mode only — HHmm offset from cash RegularTradingStart (0935 = +5 minutes). Not platform clock.
 input NightFormExtensionMinutes = 60;
 #hint NightFormExtensionMinutes: If classic 15:55-18:00 form has no valid H/L (e.g. Sunday), form from Globex reopen for this many minutes (clamped 0-240).
-input DayOnlyMode = no;
-#hint DayOnlyMode: When yes, suppress night PMZ band and night entry markers on all symbols (day cash path only). Default no = Auto day+night on the allowlisted continuous futures roots (ES/MES NQ/MNQ RTY/M2K/TF YM/MYM CL/MCL). Equity and other futures get a chart warning when this is no.
-input ForceAutoNightFutures = no;
-#hint ForceAutoNightFutures: Force the Auto night path when the chart symbol is not on the continuous allowlist (e.g. dated /CLU25:XNYM or /ESU25:XCME). Use only when you know the product should run day+night with this study's session math.
 input ShowBuildStamp = yes;
 #hint ShowBuildStamp: Shows the exact Auto study build currently loaded on the chart.
-input ShowAutoAllowlistWarning = yes;
-#hint ShowAutoAllowlistWarning: When DayOnlyMode=no and the chart symbol is not on the Auto day+night futures allowlist (equity or unsupported futures), show a high-visibility warning with the supported roots.
 
-# -----------------------------------------------------------------------------
-# AUTO DAY+NIGHT FUTURES ALLOWLIST
-# Night band + night SM only when isAutoNightFutures and !DayOnlyMode.
-# ThinkScript cannot store strings in def (Expected double). Do not
-# def chartSymbol = GetSymbol(). Compare GetSymbol() inline only.
-# No regex matches (also fails compile). Dated months: ForceAutoNightFutures=yes.
-# /CL /MCL included: upstream Tr3ndy/customer PMZ is used on WTI.
-# -----------------------------------------------------------------------------
-#   ES family : /ES:XCME   /MES:XCME
-#   NQ family : /NQ:XCME   /MNQ:XCME
-#   RTY family: /RTY:XCME  /M2K:XCME  /TF:XCME
-#   YM family : /YM:XCBT   /MYM:XCBT
-#   CL family : /CL:XNYM   /MCL:XNYM
-# -----------------------------------------------------------------------------
+# Continuous family profile (exact GetSymbol equality; no matches/regex; no string defs).
+# Minis share parent night path + DistTpl defaults. Bare root and exchange namespace both listed.
 def isEsFamily = GetSymbol() == "/ES:XCME" or GetSymbol() == "/ES" or
     GetSymbol() == "/MES:XCME" or GetSymbol() == "/MES";
 def isNqFamily = GetSymbol() == "/NQ:XCME" or GetSymbol() == "/NQ" or
@@ -132,37 +105,13 @@ def isRtyFamily = GetSymbol() == "/RTY:XCME" or GetSymbol() == "/RTY" or
     GetSymbol() == "/M2K:XCME" or GetSymbol() == "/M2K" or
     GetSymbol() == "/TF:XCME" or GetSymbol() == "/TF";
 def isYmFamily = GetSymbol() == "/YM:XCBT" or GetSymbol() == "/YM" or
-    GetSymbol() == "/MYM:XCBT" or GetSymbol() == "/MYM";
+    GetSymbol() == "/YM:XCME" or GetSymbol() == "/MYM:XCBT" or GetSymbol() == "/MYM";
 def isClFamily = GetSymbol() == "/CL:XNYM" or GetSymbol() == "/CL" or
     GetSymbol() == "/MCL:XNYM" or GetSymbol() == "/MCL";
-# True for allowlisted continuous Auto day+night futures, or forced by input.
-def isAutoNightFutures = ForceAutoNightFutures or
-    isEsFamily or isNqFamily or isRtyFamily or isYmFamily or isClFamily;
-# Backward-compatible alias used by debug/labels.
-def isFuturesProfile = isAutoNightFutures;
-# Night path runs only on the allowlist/force above, and only when DayOnlyMode is off.
-def nightEnabled = isAutoNightFutures and !DayOnlyMode;
-# DayOnlyMode=no but symbol cannot run Auto night -> warn (equity or unsupported futures).
-def autoAllowlistWarning = ShowAutoAllowlistWarning and !DayOnlyMode and !isAutoNightFutures;
-# Common non-allowlisted continuous futures (exact equality only).
-def isUnsupportedFuturesSymbol = autoAllowlistWarning and (
-    GetSymbol() == "/GC:XCEC" or GetSymbol() == "/GC" or
-    GetSymbol() == "/MGC:XCEC" or GetSymbol() == "/MGC" or
-    GetSymbol() == "/SI:XCEC" or GetSymbol() == "/SI" or
-    GetSymbol() == "/6E:XCME" or GetSymbol() == "/6E" or
-    GetSymbol() == "/ZB:XCBT" or GetSymbol() == "/ZB" or
-    GetSymbol() == "/ZN:XCBT" or GetSymbol() == "/ZN" or
-    GetSymbol() == "/BTC:XCME" or GetSymbol() == "/BTC" or
-    GetSymbol() == "/MBT:XCME" or GetSymbol() == "/MBT" or
-    GetSymbol() == "/NKD:XCME" or GetSymbol() == "/NKD" or
-    GetSymbol() == "/EMD:XCME" or GetSymbol() == "/EMD" or
-    GetSymbol() == "/QM:XNYM" or GetSymbol() == "/QM" or
-    GetSymbol() == "/NG:XNYM" or GetSymbol() == "/NG");
-def isEquityOrNonFuturesSymbol = autoAllowlistWarning and !isUnsupportedFuturesSymbol;
+# Night band + night entries on any continuous family member (ES=MES, CL=MCL, ...).
+def isFuturesProfile = isEsFamily or isNqFamily or isRtyFamily or isYmFamily or isClFamily;
 
-# Effective max distance outside PMZ (admission + gate plots).
-# DistTpl ON: ES/MES=input(10); RTY/M2K/TF=5; NQ/MNQ=25; YM/MYM=25; CL/MCL=20.
-# DistTpl OFF or other symbols: MaxDistanceOutsidePmzPoints input.
+# DistTpl effective max distance (one side). ES/MES use MaxDistanceOutsidePmzPoints (10).
 def maxDistOutside =
     if !UseInstrumentDistanceDefaults then MaxDistanceOutsidePmzPoints
     else if isRtyFamily then 5.0
@@ -371,7 +320,7 @@ def dayBandLowRaw = if !IsNaN(dayUpper) and !IsNaN(dayLower) then
     (if dayUpper >= dayLower then dayLower else dayUpper) else dayLower;
 
 def clampInputsValid = MinPmzWidthPoints <= MaxPmzWidthPoints;
-# DistTpl ON = normal/unclamped PMZ (table: use indicator normal PMZ). Clamp only when flag off.
+# DistTpl ON => normal/unclamped PMZ (table). Clamp only when DistTpl off.
 def clampEnabled = AdjustPMZ and clampInputsValid and !UseInstrumentDistanceDefaults;
 
 def dayOriginalRisk = if !IsNaN(dayBandHighRaw) and !IsNaN(dayBandLowRaw) then
@@ -504,7 +453,7 @@ def nightPmzLow = if clampEnabled then nightLowerAdj else nightLowerRaw;
 # priority at a handoff so shared status/marker paths can never read night NaNs
 # while a valid day PMZ is displayed.
 def showDayBand = inCashRth and !IsNaN(dayPmzHigh) and !IsNaN(dayPmzLow);
-def showNightBand = nightEnabled and !showDayBand and inNightDisplay and nightFormValid;
+def showNightBand = isFuturesProfile and !showDayBand and inNightDisplay and nightFormValid;
 
 # At 15:55 the PMH/PML accumulator resets for tomorrow. Preserve the final
 # valid day band through the 17:00 ES maintenance break without extending day
@@ -657,7 +606,7 @@ script PmzEntryMachine {
 
     # Packed: state + 10*budget + 100*neutral + 1000*tookCall + 10000*tookPut
     # neutral = _lastFiveMinClosedInsidePmz; took* = hasHadAcceptedEntry* until next neutral.
-    # T5 out of scope. Markers = PMZ SM fires (T1-T3 fan-out; T4 same signal).
+    # T5 out of scope. Markers = PMZ SM fires (T1–T3 fan-out; T4 same signal).
     def statePrev = if IsNaN(prevCode) then 0 else Floor(prevCode % 10);
     def budgetPrev = if IsNaN(prevCode) then 0 else Floor(Floor(prevCode / 10) % 10);
     def neutralPrev = if IsNaN(prevCode) then 0 else Floor(Floor(prevCode / 100) % 10);
@@ -675,7 +624,7 @@ script PmzEntryMachine {
         (fullReversalToPut or (statePrev == 0 and isFirstEntryGateBoundary) or crossThroughCleanPut);
 
     # Type A: 1-min outside after neutral. Not on 5-min boundary bar; not on last 1-min of a
-    # 5-min slot (bot processes that close with the five handler first - neutral may clear).
+    # 5-min slot (bot processes that close with the five handler first — neutral may clear).
     # Same-side blocked until next neutral (took*).
     def typeAFromNeutralCall = neutralPrev == 1 and !fiveCloseBar and !lastMinuteOfFive and
         oneAboveBar and callDistanceOk and tookCallPrev == 0;
@@ -703,7 +652,7 @@ script PmzEntryMachine {
     def budgetAfterOneMinute = if pullbackMiss and !fiveCloseBar then budgetPrev - 1 else budgetPrev;
     def pullbackTimedOut = pullbackMiss and !fiveCloseBar and budgetAfterOneMinute <= 0;
 
-    # Five-minute (and session-open) own the position state - matching bot five-state.
+    # Five-minute (and session-open) own the position state — matching bot five-state.
     # Do NOT move to Outside on 1-min Type A/C fires (that poisoned later 5-min transitions).
     def nextState =
         if sessionOpen then
@@ -780,9 +729,9 @@ def nightFiveMinClose = GetAggregationPeriod() <= AggregationPeriod.MIN and nigh
 def nightFirstFiveSlot = nightFiveSlot == 1 or (nightFiveSlot >= 1 and nightFiveSlot[1] < 1);
 def nightIsLastMinuteOfFive = GetAggregationPeriod() <= AggregationPeriod.MIN and nightSecFromOpen >= 0 and
     Floor(nightSecFromOpen / 300) != Floor((nightSecFromOpen + 60) / 300);
-def nightSessionOpen = nightEnabled and !IsNaN(nightSessionOpenEpoch) and
+def nightSessionOpen = isFuturesProfile and !IsNaN(nightSessionOpenEpoch) and
     nowEpoch >= nightSessionOpenEpoch and (IsNaN(nowEpoch[1]) or nowEpoch[1] < nightSessionOpenEpoch);
-def nightEntriesAllowed = nightEnabled and nightFormFrozen and !IsNaN(nightEntryStartEpoch) and
+def nightEntriesAllowed = isFuturesProfile and nightFormFrozen and !IsNaN(nightEntryStartEpoch) and
     !IsNaN(nightEntryCloseEpoch) and nowEpoch >= nightEntryStartEpoch and nowEpoch < nightEntryCloseEpoch and
     !inCashRth;
 
@@ -846,7 +795,7 @@ def daySmState = CompoundValue(1,
     0);
 
 def nightSmState = CompoundValue(1,
-    if nightEnabled then
+    if isFuturesProfile then
         PmzEntryMachine(
             nightSmState[1],
             if nightSessionOpen then 1 else 0,
@@ -959,10 +908,7 @@ plot DebugOneAbove = if oneAbove then 1 else 0;
 plot DebugOneBelow = if oneBelow then 1 else 0;
 plot DebugCallDist = callDistance;
 plot DebugPutDist = putDistance;
-plot DebugIsFutures = if isAutoNightFutures then 1 else 0;
-plot DebugNightEnabled = if nightEnabled then 1 else 0;
-plot DebugDayOnlyMode = if DayOnlyMode then 1 else 0;
-plot DebugAutoAllowlistWarn = if autoAllowlistWarning then 1 else 0;
+plot DebugIsFutures = if isFuturesProfile then 1 else 0;
 plot DebugNightFormValid = if nightFormValid then 1 else 0;
 plot DebugNightFormFrozen = if nightFormFrozen then 1 else 0;
 plot DebugPrimaryLocked = primaryValidLocked;
@@ -1018,7 +964,7 @@ PutEntryMarker.HideBubble();
 
 # Profit-target circles: 3 configurable point increments from the entry close, entry bar only.
 # Split into Call/Put plot pairs (fixed SetDefaultColor) rather than one shared plot with
-# AssignValueColor - matches the CallEntryMarker/PutEntryMarker pattern that reliably renders.
+# AssignValueColor — matches the CallEntryMarker/PutEntryMarker pattern that reliably renders.
 plot ProfitTarget1Call = if ShowProfitTargets and callFire then oneClose + ProfitTarget1Points else Double.NaN;
 ProfitTarget1Call.SetPaintingStrategy(PaintingStrategy.POINTS);
 ProfitTarget1Call.SetLineWeight(5);
@@ -1113,36 +1059,8 @@ AddVerticalLine(ShowNeutralLines and neutralAtOpen, "Neutral", CreateColor(161, 
 AddVerticalLine(ShowNeutralLines and neutralOnFiveInside, "Neutral", CreateColor(161, 66, 244), Curve.SHORT_DASH);
 
 AddLabel(ShowBuildStamp,
-    "AUTO BUILD 2026-07-21 12:05 | DayOnly=" + (if DayOnlyMode then "yes" else "no") +
-    " | ForceNight=" + (if ForceAutoNightFutures then "yes" else "no") +
-    " | DistTpl=" + (if UseInstrumentDistanceDefaults then "on/normalPMZ" else "off") +
-    " maxD=" + AsText(maxDistOutside, NumberFormat.TWO_DECIMAL_PLACES) +
-    " | ES/MES NQ/MNQ RTY/M2K YM/MYM CL/MCL",
+    "AUTO RC 2026-07-15 14:35:29 + alerts + liveEntry + DistTpl 2026-07-21 | DistTpl=" + (if UseInstrumentDistanceDefaults then "on/normalPMZ" else "off") + " maxD=" + AsText(maxDistOutside, NumberFormat.TWO_DECIMAL_PLACES) + " | ES/MES NQ/MNQ RTY YM CL/MCL",
     Color.WHITE,
-    location = Location.TOP_RIGHT,
-    size = FontSize.SMALL);
-
-# High-visibility: DayOnlyMode=no but symbol is not on the Auto day+night futures allowlist.
-# Day path still runs; night will not. Set DayOnlyMode=yes to acknowledge day-only, or switch symbol.
-# Dated contracts: set ForceAutoNightFutures=yes.
-AddLabel(autoAllowlistWarning,
-    "WARNING: " + GetSymbol() + " is NOT on the Auto continuous allowlist - day only (no night band/entries).",
-    Color.ORANGE,
-    location = Location.TOP_RIGHT,
-    size = FontSize.MEDIUM);
-AddLabel(autoAllowlistWarning and isEquityOrNonFuturesSymbol,
-    "Equity/other/dated: DayOnlyMode=yes to silence, or ForceAutoNightFutures=yes for dated allowlisted roots, or chart continuous /ES /CL etc.",
-    Color.ORANGE,
-    location = Location.TOP_RIGHT,
-    size = FontSize.SMALL);
-AddLabel(autoAllowlistWarning and isUnsupportedFuturesSymbol,
-    "Unsupported future for Auto night (e.g. GC/6E/ZB). Day path only. DayOnlyMode=yes silences this.",
-    Color.ORANGE,
-    location = Location.TOP_RIGHT,
-    size = FontSize.SMALL);
-AddLabel(autoAllowlistWarning,
-    "Auto night continuous allowlist: /ES /MES /NQ /MNQ /RTY /M2K /TF /YM /MYM /CL /MCL (+exchange). Dated: ForceAutoNightFutures=yes.",
-    Color.YELLOW,
     location = Location.TOP_RIGHT,
     size = FontSize.SMALL);
 
@@ -1225,22 +1143,11 @@ Alert(AlertOnProfitTarget and !AlertProfitTargetSound and tp3TouchNow, "PMZ TP3 
 
 def bannerActive = Banner;
 AddLabel(Banner,
-    "Auto: " +
-    (if DayOnlyMode then "DAY-ONLY flag"
-     else if nightEnabled and ForceAutoNightFutures then "FORCE night (day+night)"
-     else if nightEnabled then "FUTURES allowlist (day+night)"
-     else if isAutoNightFutures then "FUTURES allowlist (day only)"
-     else if isUnsupportedFuturesSymbol then "UNSUPPORTED FUT (day only)"
-     else "EQUITY/OTHER (day only)") +
-    " | sym " + GetSymbol() +
+    "Auto: " + (if isFuturesProfile then "FUTURES (day+night)" else "EQUITY (day only)") +
     " | " + (if showNightBand then "session NIGHT" else if showDayBand then "session DAY" else "session off") +
-    (if nightEnabled and nightExtensionPath then " | night form: extension"
-     else if nightEnabled and nightFormValid then " | night form: primary" else ""),
-    if nightEnabled then Color.MAGENTA else if autoAllowlistWarning then Color.ORANGE else if DayOnlyMode then Color.ORANGE else Color.WHITE);
-
-AddLabel(Banner and isAutoNightFutures and !DayOnlyMode,
-    "Allowlist OK: Auto night armed for " + GetSymbol(),
-    Color.DARK_GREEN);
+    (if isFuturesProfile and nightExtensionPath then " | night form: extension"
+     else if isFuturesProfile and nightFormValid then " | night form: primary" else ""),
+    if isFuturesProfile then Color.MAGENTA else Color.WHITE);
 
 AddLabel(bannerActive,
     "LIS: " + AsText(LIS, NumberFormat.TWO_DECIMAL_PLACES) +
@@ -1289,7 +1196,7 @@ AddLabel(bannerActive and AdjustPMZ,
     Color.GRAY);
 
 AddLabel(bannerActive and !clampInputsValid,
-    "WARNING: MinPmzWidthPoints > MaxPmzWidthPoints - clamp disabled.",
+    "WARNING: MinPmzWidthPoints > MaxPmzWidthPoints — clamp disabled.",
     Color.MAGENTA);
 
 AddLabel(bannerActive,
@@ -1310,20 +1217,12 @@ AddLabel(bannerActive,
 
 def chartIsOneMinute = GetAggregationPeriod() == AggregationPeriod.MIN;
 AddLabel(Banner and !chartIsOneMinute,
-    "WARNING: Use a 1-minute chart (equity or CME equity-index futures family). Current aggregation is not 1-minute.",
+    "WARNING: Use a 1-minute /ES, /NQ, /RTY, or /YM continuous chart. Current aggregation is not 1-minute.",
     Color.MAGENTA);
 
-AddLabel(Banner and nightEnabled and !nightFormValid and inNightDisplay,
+AddLabel(Banner and isFuturesProfile and !nightFormValid and inNightDisplay,
     "WARNING: Night PMZ form invalid (no usable H/L). No night entries.",
     Color.MAGENTA);
-
-AddLabel(Banner and isAutoNightFutures and DayOnlyMode,
-    "DayOnlyMode: night band/entries suppressed (symbol is on Auto allowlist).",
-    Color.ORANGE);
-
-AddLabel(Banner and autoAllowlistWarning,
-    "Allowlist miss: night disabled. Cont: ES/MES NQ/MNQ RTY/M2K/TF YM/MYM CL/MCL. Dated: ForceAutoNightFutures=yes.",
-    Color.ORANGE);
 
 AddLabel(bannerActive,
     "1m: " +

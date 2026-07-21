@@ -50,6 +50,9 @@ History was filtered from the original `PeakBot-LLC/pmzbot` monorepo path `Docum
 | File | Description |
 |------|-------------|
 | `PMZBot_T1T3_EntryIndicator.ts.txt` | Full ThinkScript study (day + NightMode). Paste into TOS Studies → Create. Day/night PMZ, adjustable clamp, five-state entry machine, distance gate, markers, labels, `Debug*` plots. |
+| `PMZBot_T1T3_EntryIndicator_Day.ts.txt` / `_DayOrNight` / `_Auto` | Day-only, mode-flag day/night, and concurrent Auto variants (see README). **Auto WIP:** `DayOnlyMode` + allowlist ES/MES…CL/MCL. |
+| `PMZBot_T1T3_EntryIndicator_Auto_RC_DistTpl.ts.txt` | **Preferred Auto paste** — RC night math + alerts + live-entry label + instrument distance template (normal PMZ, family maxD). |
+| `PMZBot_T5_ContinuationIndicator.ts.txt` | **Standalone Tier5** study: Trendy Cloud + 1m velocity continuation markers. Not PMZ SM. Stack beside T1–T3; never fold into PMZ fire streams. |
 | `Tr3ndyPMZ.ts.txt` | Original Tr3ndy PMZ ThinkScript (day + night/AH band). Canonical night PMZ reference; copied from pmzbot `Documentation/ASSETS/`. |
 | `Tr3ndyPMZ_Adjusted.ts.txt` | Same as original plus day `AdjustPMZ` 5–8 clamp; night block unchanged. |
 | `README.md` | Operator setup for TOS, out-of-scope list, known limitations, and 2026-07-12 live-testing bug notes (full-reversal arming, aggregation floor, timezone-safe RTH anchors, NaN state-machine self-heal). |
@@ -57,7 +60,7 @@ History was filtered from the original `PeakBot-LLC/pmzbot` monorepo path `Docum
 
 ## Subdirectories
 
-None. Flat repo: entry indicator, Tr3ndy reference scripts, README, AGENTS. Do not invent package/layout structure unless the project is intentionally expanded.
+None. Flat repo: PMZ entry studies, **optional T5 continuation study**, Tr3ndy reference scripts, README, AGENTS. Do not invent package/layout structure unless the product is intentionally expanded.
 
 ## Architecture (indicator internals)
 
@@ -178,9 +181,10 @@ Stakeholder Q&A — implement against this; do not re-open without user change.
 
 ## Explicitly out of scope
 
-- Exit markers, consolidation pause, active-trade / cooldown / de-dupe, tier-close simulation
+- Exit markers, consolidation pause, active-trade / cooldown / de-dupe, tier-close simulation (T5 study may apply optional **marker** cooldown only)
 - SPX strike/premium selection, IV, DTE (pure ES-price entry timing visual)
-- v2-only bot exclusions: edge-proximity blocking, far-distance 3-minute deferral, manual PMZ override inputs
+- v2-only bot exclusions on **PMZ** path: edge-proximity blocking, far-distance 3-minute deferral, manual PMZ override inputs
+- Folding Tier5 into PMZ Auto/Day as a shared fire stream (keep `PMZBot_T5_ContinuationIndicator.ts.txt` standalone)
 - Automated unit tests in-repo (parity is against bot `TestScenarios` / live TOS replay, not a local runner)
 
 ## For AI Agents
@@ -188,7 +192,8 @@ Stakeholder Q&A — implement against this; do not re-open without user change.
 ### Working In This Directory
 
 - **Language:** ThinkScript (TOS), not TypeScript/JavaScript. The `.ts.txt` extension is intentional for paste-into-TOS workflows; do not convert to a Node/TS project without an explicit product decision.
-- **Edit carefully:** TOS has no local compile/test loop here. Prefer small, comment-backed changes that mirror known C# bot semantics (`PmzEntryStateMachine`, `PmzWidthAdjuster`).
+- **Edit carefully:** TOS has no local compile/test loop here. Prefer small, comment-backed changes that mirror known C# bot semantics (`PmzEntryStateMachine`, `PmzWidthAdjuster`; T5 → `Tier5MomentumContinuationEvaluator`).
+- **PMZ vs T5:** Never merge T5 fires into PMZ `callFire`/`putFire` / live-entry labels. Stack studies on the price subgraph instead.
 - **Preserve recursion invariants:** `smState` is `CompoundValue(1, PmzEntryMachine(smState[1], ...), 0)`. Any `NaN` on a mid-chart bar poisons all subsequent bars unless `statePrev`/`armPrev`/`budgetPrev` self-heal to `0` — do not remove those guards.
 - **Full-reversal / cross-through:** Must key off **raw previous state** (`statePrev` from `smState[1]`), not a zeroed `stateForFiveMinute`. Zeroing previous state on cross-through bars reintroduces a silent one-minute entry delay (fixed 2026-07-12).
 - **Aggregation:** Floor multi-period series to the chart’s primary period when needed so non-1m charts show the warning banner instead of `"Secondary period cannot be less than primary"`.
@@ -235,7 +240,7 @@ There is no automated test harness in this repo. After substantive logic changes
 - Day `Premarket="ALL"` still uses platform-clock literals (PRE path is epoch-safe).
 - Holiday Globex afternoon breaks not calendared; Friday cashClose+2h rarely has bars (Sunday uses Fri-midnight+2d+18h / long-gap). Absolute-ms day math can still skew ~1h around DST transitions.
 - Full TOS replay of TestScenarios / live bot-log spot-check still outstanding for day path.
-- Auto day+night without `NightMode` flag is a future goal (not v1).
+- Auto concurrent day+night is implemented in `_Auto` (no `NightMode`). Optional `DayOnlyMode=yes` forces day-only on any symbol. Night allowlist: ES/MES, NQ/MNQ, RTY/M2K/TF, YM/MYM, **CL/MCL** (customer/Tr3ndy PMZ on oil); other futures products are day-only by design (see README).
 - No in-repo automated ThinkScript runner.
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->

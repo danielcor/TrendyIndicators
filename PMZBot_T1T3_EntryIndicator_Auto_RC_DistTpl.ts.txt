@@ -7,7 +7,7 @@
 # + ShowLiveEntryLabel (BUY/SELL+TP only, independent of StatusStrip)
 # + UseInstrumentDistanceDefaults: normal PMZ (no 5-8 clamp) + family maxD ES/MES=10 RTY=5 NQ=25 YM=25 CL/MCL=20
 # + Full continuous family night profile: ES/MES NQ/MNQ RTY/M2K/TF YM/MYM CL/MCL (minis = parents)
-# + AggressiveEntries: 5-min close outside PMZ within maxD fires without prior neutral (default no)
+# + AggressiveEntries: each 5-min close outside PMZ within maxD fires (no neutral arming, no same-side took block)
 # Purpose: Concurrent day + night sessions by clock. Futures vs equity inferred from GetSymbol().
 #   Supported CME index futures (/ES, /NQ, /RTY, /YM): day cash entries + Globex night entries.
 #   Equity (e.g. SPY, AAPL): day cash entries only.
@@ -90,7 +90,7 @@ input MaxTriggerCandles = 5;
 input EnableFullReversalFreshBreakout = yes;
 #hint EnableFullReversalFreshBreakout: Treat a 5-minute outside-to-opposite-outside traversal as a fresh clean breakout arm.
 input AggressiveEntries = no;
-#hint AggressiveEntries: When yes, fire on a 5-minute close outside the PMZ within max distance (1-min still outside on the boundary bar) without requiring a prior neutral/inside candle or Type C arming preconditions. Still respects entry gate, distance, and same-side took latch until next neutral. Default no = normal SM (Type A/C).
+#hint AggressiveEntries: When yes, every 5-minute close outside the PMZ within max distance (1-min still outside on that boundary bar) can fire — no prior neutral/inside-family arming and no same-side took block. Still requires entry gate open + distance. Default no = normal SM (Type A/C + took latch).
 input EntryGateTimeET = 0935;
 #hint EntryGateTimeET: Day mode only — HHmm offset from cash RegularTradingStart (0935 = +5 minutes). Not platform clock.
 input NightFormExtensionMinutes = 60;
@@ -645,12 +645,14 @@ script PmzEntryMachine {
     def typeCPutFire = fiveCloseBar and fiveBelowBar and oneBelowBar and putDistanceOk and
         fivePutDistanceOk and (insideFamily or fullReversalToPut or neutralPrev == 1);
 
-    # Aggressive: 5-min close outside within range, 1-min still outside — no neutral/inside-family
-    # / full-reversal precondition. Same-side took latch still applies until next neutral.
+    # Aggressive: each 5-min close outside within range (1-min still outside on boundary).
+    # Skips neutral/inside-family/full-reversal arming AND same-side took latch (that latch is
+    # what blocked "extra" markers after the first same-side fire when Agg was on).
+    # Still needs entriesAllowed + distance. Does not fire on 1-min wicks alone — only 5-min closes.
     def aggressiveCallFire = aggressiveEnabled and fiveCloseBar and fiveAboveBar and oneAboveBar and
-        callDistanceOk and fiveCallDistanceOk and tookCallPrev == 0;
+        callDistanceOk and fiveCallDistanceOk;
     def aggressivePutFire = aggressiveEnabled and fiveCloseBar and fiveBelowBar and oneBelowBar and
-        putDistanceOk and fivePutDistanceOk and tookPutPrev == 0;
+        putDistanceOk and fivePutDistanceOk;
 
     def cleanCallFire = entriesOk and oneAboveBar and callDistanceOk and
         (sameBarCleanCall or typeAFromNeutralCall or typeCCallFire or aggressiveCallFire);
@@ -1074,7 +1076,7 @@ AddVerticalLine(ShowNeutralLines and neutralAtOpen, "Neutral", CreateColor(161, 
 AddVerticalLine(ShowNeutralLines and neutralOnFiveInside, "Neutral", CreateColor(161, 66, 244), Curve.SHORT_DASH);
 
 AddLabel(ShowBuildStamp,
-    "AUTO RC 2026-07-15 14:35:29 + DistTpl + Agg 2026-07-21 | DistTpl=" + (if UseInstrumentDistanceDefaults then "on/normalPMZ" else "off") + " maxD=" + AsText(maxDistOutside, NumberFormat.TWO_DECIMAL_PLACES) + " | Agg=" + (if AggressiveEntries then "yes" else "no") + " | ES/MES NQ/MNQ RTY YM CL/MCL",
+    "AUTO RC 2026-07-15 14:35:29 + DistTpl + AggFix 2026-07-21 | DistTpl=" + (if UseInstrumentDistanceDefaults then "on/normalPMZ" else "off") + " maxD=" + AsText(maxDistOutside, NumberFormat.TWO_DECIMAL_PLACES) + " | Agg=" + (if AggressiveEntries then "yes" else "no") + " | ES/MES NQ/MNQ RTY YM CL/MCL",
     Color.WHITE,
     location = Location.TOP_RIGHT,
     size = FontSize.SMALL);

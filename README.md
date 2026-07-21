@@ -13,7 +13,7 @@ PMZBot-style entry state machine (entries only; bot does not need to be running)
 | `PMZBot_T1T3_EntryIndicator_Day.ts.txt` | **Day only** — cash RTH entries, bot day parity |
 | `PMZBot_T1T3_EntryIndicator_DayOrNight.ts.txt` | **Day *or* night** via `NightMode` / `futures` flags (not both at once) |
 | `PMZBot_T1T3_EntryIndicator_Auto.ts.txt` | **Day *and* night** auto WIP (allowlist DayOnlyMode/Force, DistTpl). Prefer `_Auto_RC_DistTpl` when overnight must stay solid. |
-| `PMZBot_T1T3_EntryIndicator_Auto_RC_DistTpl.ts.txt` | **Preferred Auto RC** — known-good night math (`c905043` + alerts) + `ShowLiveEntryLabel` + `UseInstrumentDistanceDefaults` (normal PMZ, family maxD ES/MES=10 RTY=5 NQ=25 YM=25 CL/MCL=20) + continuous family night (ES/MES NQ/MNQ RTY/M2K/TF YM/MYM CL/MCL). |
+| `PMZBot_T1T3_EntryIndicator_Auto_RC_DistTpl.ts.txt` | **Preferred Auto RC** — known-good night math (`c905043` + alerts) + `ShowLiveEntryLabel` + `UseInstrumentDistanceDefaults` (normal PMZ, family maxD ES/MES=10 RTY=5 NQ=25 YM=25 CL/MCL=20) + continuous family night (ES/MES NQ/MNQ RTY/M2K/TF YM/MYM CL/MCL) + optional `AggressiveEntries` (5m outside in range without prior neutral; default no). |
 | `PMZBot_T5_ContinuationIndicator.ts.txt` | **Tier5 only** — standalone Trendy Cloud + 1m velocity continuation markers (not PMZ SM). Stack on the same price subgraph as a T1–T3 study. |
 
 ## Entry markers & profit targets

@@ -5,7 +5,9 @@
 # Base: known-good night math (fridayMidnightEpoch absolute weekend). No 16:05 night rewrites.
 # + alerts-only (opt sound) 2026-07-17
 # + ShowLiveEntryLabel (BUY/SELL+TP only, independent of StatusStrip)
-# + UseInstrumentDistanceDefaults: normal PMZ (no 5-8 clamp) + family maxD ES/MES=10 RTY=5 NQ=25 YM=25 CL/MCL=20
+# + UseInstrumentDistanceDefaults: family FAR-edge maxD ES/MES=10 RTY=5 NQ=50 YM=25 CL/MCL=0.5
+#   DistTpl ON: ES/MES bot-style AdjustPMZ 5-8 clamp; other families normal/unclamped PMZ
+#   Distance always FAR-boundary (CALL=close-PMZ Low, PUT=PMZ High-close) — bot parity
 # + Full continuous family night profile: ES/MES NQ/MNQ RTY/M2K/TF YM/MYM CL/MCL (minis = parents)
 # + AggressiveEntries: each 5-min close outside PMZ within maxD fires (no neutral arming, no same-side took block)
 # Purpose: Concurrent day + night sessions by clock. Futures vs equity inferred from GetSymbol().
@@ -84,7 +86,7 @@ input ShowOriginalPMZWhenAdjusted = no;
 input MaxDistanceOutsidePmzPoints = 10.0;
 #hint MaxDistanceOutsidePmzPoints: Manual max distance outside PMZ (points). ES/MES value and fallback when DistTpl=no or symbol not in a family. CALL=close-PMZ Low; PUT=PMZ High-close; strict GT reject.
 input UseInstrumentDistanceDefaults = yes;
-#hint UseInstrumentDistanceDefaults: When yes: (1) NORMAL PMZ — skip AdjustPMZ 5-8 clamp; (2) family max distance: ES/MES=this input (10), RTY/M2K/TF=5, NQ/MNQ=25, YM/MYM=25, CL/MCL=20. Minis share parent defaults. When no: AdjustPMZ + MaxDistance apply to all symbols.
+#hint UseInstrumentDistanceDefaults: When yes: (1) ES/MES use bot-style PMZ width clamp [MinPmzWidthPoints,MaxPmzWidthPoints] default 5-8; other families keep normal/unclamped PMZ; (2) family FAR-edge max distance ES/MES=this input (10), RTY/M2K/TF=5, NQ/MNQ=50, YM/MYM=25, CL/MCL=0.5. Distance is always far-boundary (CALL=close-PMZ Low, PUT=PMZ High-close). When no: AdjustPMZ applies to all symbols + MaxDistanceOutsidePmzPoints for everyone.
 input MaxTriggerCandles = 5;
 #hint MaxTriggerCandles: One-minute trigger budget after a 5-minute inside-PMZ pullback confirmation.
 input EnableFullReversalFreshBreakout = yes;
@@ -118,10 +120,11 @@ def isFuturesProfile = isEsFamily or isNqFamily or isRtyFamily or isYmFamily or 
 def maxDistOutside =
     if !UseInstrumentDistanceDefaults then MaxDistanceOutsidePmzPoints
     else if isRtyFamily then 5.0
-    else if isNqFamily then 25.0
+    else if isNqFamily then 50.0
     else if isYmFamily then 25.0
-    else if isClFamily then 20.0
+    else if isClFamily then 0.5
     else MaxDistanceOutsidePmzPoints;
+# Always FAR-boundary distance (bot parity): CALL = close - PMZ Low; PUT = PMZ High - close.
 
 def period = if GetAggregationPeriod() <= AggregationPeriod.FIVE_MIN then
     AggregationPeriod.FIVE_MIN
@@ -323,8 +326,10 @@ def dayBandLowRaw = if !IsNaN(dayUpper) and !IsNaN(dayLower) then
     (if dayUpper >= dayLower then dayLower else dayUpper) else dayLower;
 
 def clampInputsValid = MinPmzWidthPoints <= MaxPmzWidthPoints;
-# DistTpl ON => normal/unclamped PMZ (table). Clamp only when DistTpl off.
-def clampEnabled = AdjustPMZ and clampInputsValid and !UseInstrumentDistanceDefaults;
+# DistTpl ON: ES/MES use bot-style 5-8 clamp (when AdjustPMZ=yes); other families normal/unclamped.
+# DistTpl OFF: AdjustPMZ applies to every symbol.
+def clampEnabled = AdjustPMZ and clampInputsValid and
+    (!UseInstrumentDistanceDefaults or isEsFamily);
 
 def dayOriginalRisk = if !IsNaN(dayBandHighRaw) and !IsNaN(dayBandLowRaw) then
     AbsValue(dayBandHighRaw - dayBandLowRaw) else Double.NaN;
@@ -1076,7 +1081,7 @@ AddVerticalLine(ShowNeutralLines and neutralAtOpen, "Neutral", CreateColor(161, 
 AddVerticalLine(ShowNeutralLines and neutralOnFiveInside, "Neutral", CreateColor(161, 66, 244), Curve.SHORT_DASH);
 
 AddLabel(ShowBuildStamp,
-    "AUTO RC 2026-07-15 14:35:29 + DistTpl + AggFix 2026-07-21 | DistTpl=" + (if UseInstrumentDistanceDefaults then "on/normalPMZ" else "off") + " maxD=" + AsText(maxDistOutside, NumberFormat.TWO_DECIMAL_PLACES) + " | Agg=" + (if AggressiveEntries then "yes" else "no") + " | ES/MES NQ/MNQ RTY YM CL/MCL",
+    "AUTO RC 2026-07-15 14:35:29 + DistTpl farEdge ES5-8 2026-07-21 | DistTpl=" + (if UseInstrumentDistanceDefaults then "on" else "off") + " maxD=" + AsText(maxDistOutside, NumberFormat.TWO_DECIMAL_PLACES) + " clampES=" + (if (AdjustPMZ and UseInstrumentDistanceDefaults and isEsFamily) then "yes" else "no") + " | Agg=" + (if AggressiveEntries then "yes" else "no") + " | ES/MES NQ/MNQ RTY YM CL/MCL",
     Color.WHITE,
     location = Location.TOP_RIGHT,
     size = FontSize.SMALL);
